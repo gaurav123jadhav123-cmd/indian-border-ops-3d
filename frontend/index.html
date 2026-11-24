@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Indian Border Ops 3D — Tactical PVP FPS</title>
   <link rel="stylesheet" href="css/style.css" />
   <script type="importmap">
@@ -68,7 +68,7 @@
       </div>
 
       <div class="controls-bar">
-        <span><b>WASD</b> Move</span>
+        <span><b>WASD / Touch Stick</b> Move</span>
         <span><b>Shift</b> Sprint</span>
         <span><b>C/Z</b> Crouch/Prone</span>
         <span><b>Q/E</b> Lean</span>
@@ -97,10 +97,36 @@
     <div id="hitmarker" class="hitmarker hidden">✕</div>
     <div id="drone-overlay" class="drone-overlay hidden">
       <div class="drone-label" id="drone-label">FPV ATTACK DRONE [1ST PERSON]</div>
-      <div class="drone-hint">WASD Fly • Space/Shift Alt • Left Click / X Detonate • Esc Exit</div>
+      <div class="drone-hint">WASD/Stick Fly • Space/Shift Alt • Fire/X Detonate</div>
     </div>
-    <div id="airdrop-prompt" class="prompt-banner hidden">Press [F] to Loot Air Drop Crate</div>
+    <div id="airdrop-prompt" class="prompt-banner hidden">Tap / Press [F] to Loot Air Drop Crate</div>
     <div id="alert-banner" class="alert-banner hidden"></div>
+
+    <!-- MOBILE TOUCH CONTROLS -->
+    <div id="mobile-controls" class="mobile-controls hidden">
+      <div id="touch-look-zone" class="touch-look-zone"></div>
+      <div id="joy-base" class="joy-base">
+        <div id="joy-knob" class="joy-knob"></div>
+      </div>
+      <div class="mobile-top-actions">
+        <button id="btn-cam" class="m-btn">1P/3P</button>
+        <button id="btn-swap" class="m-btn">SWAP</button>
+        <button id="btn-heal" class="m-btn">HEAL</button>
+        <button id="btn-frag" class="m-btn">FRAG</button>
+        <button id="btn-smoke" class="m-btn">SMK</button>
+        <button id="btn-missile" class="m-btn">MSL</button>
+        <button id="btn-fpv" class="m-btn">FPV</button>
+        <button id="btn-recon" class="m-btn">RCN</button>
+      </div>
+      <div class="mobile-right-actions">
+        <button id="btn-fire" class="m-btn fire">FIRE</button>
+        <button id="btn-ads" class="m-btn">ADS</button>
+        <button id="btn-reload" class="m-btn">RLD</button>
+        <button id="btn-jump" class="m-btn">JMP</button>
+        <button id="btn-crouch" class="m-btn">CRC</button>
+        <button id="btn-prone" class="m-btn">PRN</button>
+      </div>
+    </div>
 
     <div class="hud-bottom">
       <div class="vitals-box">

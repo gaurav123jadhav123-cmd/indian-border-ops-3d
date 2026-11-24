@@ -3,9 +3,9 @@ import { buildBorderTerrain } from './terrain.js';
 import { createWeaponViewModel, playSound } from './weapons.js';
 import { createSoldierMesh, LocalPlayerController } from './player.js';
 import { createDroneMesh, applyDroneCamera } from './drones.js';
+import { MobileControls } from './mobileControls.js';
 import { fetchArsenal, fetchLeaderboard, loginPlayer, savePlayerLoadout, connectGameServer } from './network.js';
 
-// DOM Elements
 const lobbyScreen = document.getElementById('lobby-screen');
 const hud = document.getElementById('hud');
 const deployBtn = document.getElementById('deploy-btn');
@@ -22,8 +22,9 @@ let socket = null;
 let localPlayerId = null;
 let activeDroneId = null;
 let lastSnapshot = null;
+let slotIndex = 0;
+const slots = ['primary', 'secondary', 'launcher'];
 
-// Three.js Scene Setup
 const canvas = document.getElementById('game-canvas');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -56,6 +57,83 @@ const grenadeMeshes = new Map();
 const missileMeshes = new Map();
 const fxList = [];
 
+function fireWeaponOrDrone() {
+  if (!socket) return;
+  if (activeDroneId) {
+    socket.emit('control_drone', { detonate: true });
+    return;
+  }
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  socket.emit('shoot', {
+    origin: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
+    dir: { x: dir.x, y: dir.y, z: dir.z }
+  });
+  playSound('rifle');
+  if (currentViewModel) {
+    const flash = currentViewModel.getObjectByName('muzzleFlash');
+    if (flash) {
+      flash.visible = true;
+      setTimeout(() => { flash.visible = false; }, 50);
+    }
+  }
+}
+
+const mobileControls = new MobileControls({
+  onLook: (dx, dy) => controller.addLookDelta(dx, dy),
+  onFire: () => fireWeaponOrDrone(),
+  onAds: (down) => { controller.ads = down; },
+  onJump: () => controller.triggerJump(),
+  onCrouch: () => controller.toggleCrouch(),
+  onProne: () => controller.toggleProne(),
+  onReload: () => socket && socket.emit('reload'),
+  onToggleCam: () => { controller.thirdPerson = !controller.thirdPerson; },
+  onSwapWeapon: () => {
+    if (!socket) return;
+    slotIndex = (slotIndex + 1) % slots.length;
+    const slot = slots[slotIndex];
+    socket.emit('switch_weapon', slot);
+    const me = lastSnapshot?.players?.find((p) => p.id === localPlayerId);
+    setViewModel(me?.loadout?.[slot] || 'sig716');
+  },
+  onFrag: () => {
+    if (!socket) return;
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    socket.emit('throw_grenade', { type: 'frag', origin: camera.position, dir });
+  },
+  onSmoke: () => {
+    if (!socket) return;
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    socket.emit('throw_grenade', { type: 'smoke', origin: camera.position, dir });
+  },
+  onMissile: () => {
+    if (!socket) return;
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    socket.emit('call_missile', { targetX: controller.x + dir.x * 35, targetZ: controller.z + dir.z * 35 });
+  },
+  onFpvDrone: () => socket && socket.emit('deploy_drone', { mode: 'fpv' }),
+  onReconDrone: () => socket && socket.emit('deploy_drone', { mode: 'recon' }),
+  onHeal: () => {
+    if (!socket) return;
+    const me = lastSnapshot?.players?.find((p) => p.id === localPlayerId);
+    if (!me) return;
+    if (me.hp < 60 && me.inventory.firstAid > 0) socket.emit('use_heal', { item: 'firstAid' });
+    else if (me.hp < 95 && me.inventory.bandage > 0) socket.emit('use_heal', { item: 'bandage' });
+    else if (me.inventory.energyDrink > 0) socket.emit('use_heal', { item: 'energyDrink' });
+  }
+});
+
+// Allow tapping the Air Drop banner on mobile to loot
+document.getElementById('airdrop-prompt').addEventListener('click', () => {
+  const promptEl = document.getElementById('airdrop-prompt');
+  if (socket && !promptEl.classList.contains('hidden')) {
+    socket.emit('loot_airdrop', { crateId: promptEl.dataset.crateId });
+  }
+});
+
 function setViewModel(weaponId) {
   if (currentViewModel) camera.remove(currentViewModel);
   const w = arsenalData?.weapons?.[weaponId];
@@ -83,21 +161,13 @@ function spawnExplosionFx(x, y, z, radius = 8) {
 }
 
 function spawnTracer(origin, dir) {
-  const end = new THREE.Vector3(
-    origin.x + dir.x * 65,
-    origin.y + dir.y * 65,
-    origin.z + dir.z * 65
-  );
-  const geo = new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(origin.x, origin.y, origin.z),
-    end
-  ]);
+  const end = new THREE.Vector3(origin.x + dir.x * 65, origin.y + dir.y * 65, origin.z + dir.z * 65);
+  const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(origin.x, origin.y, origin.z), end]);
   const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xfef08a, transparent: true, opacity: 0.85 }));
   scene.add(line);
   fxList.push({ mesh: line, life: 0.08, maxLife: 0.08 });
 }
 
-// Initialize Lobby Data
 async function initLobby() {
   try {
     arsenalData = await fetchArsenal();
@@ -105,13 +175,9 @@ async function initLobby() {
 
     for (const w of weapons) {
       const opt = new Option(`${w.name} (${w.caliber})`, w.id);
-      if (['assault', 'smg', 'sniper', 'lmg'].includes(w.category) && !w.airdropOnly) {
-        primarySelect.add(opt);
-      } else if (w.category === 'sidearm') {
-        secondarySelect.add(opt);
-      } else if (w.category === 'launcher') {
-        launcherSelect.add(opt);
-      }
+      if (['assault', 'smg', 'sniper', 'lmg'].includes(w.category) && !w.airdropOnly) primarySelect.add(opt);
+      else if (w.category === 'sidearm') secondarySelect.add(opt);
+      else if (w.category === 'launcher') launcherSelect.add(opt);
     }
 
     const updatePreview = () => {
@@ -170,7 +236,12 @@ function bindSocketEvents() {
 
     lobbyScreen.classList.add('hidden');
     hud.classList.remove('hidden');
-    canvas.requestPointerLock();
+
+    if (mobileControls.enabled) {
+      mobileControls.show();
+    } else {
+      canvas.requestPointerLock();
+    }
   });
 
   socket.on('state_snapshot', (snap) => {
@@ -180,9 +251,7 @@ function bindSocketEvents() {
   });
 
   socket.on('shot_fired', ({ shooterId, origin, dir }) => {
-    if (shooterId !== localPlayerId) {
-      spawnTracer(origin, dir);
-    }
+    if (shooterId !== localPlayerId) spawnTracer(origin, dir);
   });
 
   socket.on('hit_confirm', () => {
@@ -191,9 +260,7 @@ function bindSocketEvents() {
     setTimeout(() => hm.classList.add('hidden'), 120);
   });
 
-  socket.on('explosion', ({ x, y, z, radius }) => {
-    spawnExplosionFx(x, y, z, radius);
-  });
+  socket.on('explosion', ({ x, y, z, radius }) => spawnExplosionFx(x, y, z, radius));
 
   socket.on('smoke_deployed', ({ x, y, z }) => {
     const smoke = new THREE.Mesh(
@@ -237,7 +304,7 @@ function bindSocketEvents() {
   });
 
   socket.on('match_ended', (summary) => {
-    document.exitPointerLock();
+    if (document.pointerLockElement) document.exitPointerLock();
     alert(`MATCH OVER! Winner: ${summary.winnerTeam.toUpperCase()} (${summary.scores.bharat} - ${summary.scores.opfor})`);
     window.location.reload();
   });
@@ -266,7 +333,6 @@ function syncWorldState(snap) {
     }
   }
 
-  // Airdrops
   const seenDrops = new Set();
   for (const c of snap.airdrops) {
     seenDrops.add(c.id);
@@ -296,7 +362,6 @@ function syncWorldState(snap) {
     }
   }
 
-  // Drones
   const seenDrones = new Set();
   let myActiveDroneGone = activeDroneId !== null;
   for (const d of snap.drones) {
@@ -322,7 +387,6 @@ function syncWorldState(snap) {
     }
   }
 
-  // Grenades & Missiles
   syncProjectiles(snap.grenades, grenadeMeshes, 0x16a34a, 0.18);
   syncProjectiles(snap.missiles, missileMeshes, 0xfacc15, 0.5);
 }
@@ -382,7 +446,6 @@ function updateHud(snap) {
   if (!me.alive) respawnOverlay.classList.remove('hidden');
   else respawnOverlay.classList.add('hidden');
 
-  // Air drop proximity prompt
   const nearDrop = snap.airdrops.find((c) => c.landed && Math.hypot(c.x - me.x, c.z - me.z) < 5);
   const promptEl = document.getElementById('airdrop-prompt');
   if (nearDrop) {
@@ -393,9 +456,8 @@ function updateHud(snap) {
   }
 }
 
-// Combat & Tactical Input Bindings
 canvas.addEventListener('click', () => {
-  if (!hud.classList.contains('hidden') && !controller.locked) {
+  if (!mobileControls.enabled && !hud.classList.contains('hidden') && !controller.locked) {
     canvas.requestPointerLock();
   }
 });
@@ -403,26 +465,7 @@ canvas.addEventListener('click', () => {
 window.addEventListener('mousedown', (e) => {
   if (!controller.locked || !socket) return;
   if (e.button === 2) controller.ads = true;
-  if (e.button === 0) {
-    if (activeDroneId) {
-      socket.emit('control_drone', { detonate: true });
-      return;
-    }
-    const dir = new THREE.Vector3();
-    camera.getWorldDirection(dir);
-    socket.emit('shoot', {
-      origin: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
-      dir: { x: dir.x, y: dir.y, z: dir.z }
-    });
-    playSound('rifle');
-    if (currentViewModel) {
-      const flash = currentViewModel.getObjectByName('muzzleFlash');
-      if (flash) {
-        flash.visible = true;
-        setTimeout(() => { flash.visible = false; }, 50);
-      }
-    }
-  }
+  if (e.button === 0) fireWeaponOrDrone();
 });
 
 window.addEventListener('mouseup', (e) => {
@@ -441,12 +484,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyR') socket.emit('reload');
   if (e.code === 'KeyG') socket.emit('throw_grenade', { type: 'frag', origin: camera.position, dir });
   if (e.code === 'KeyT') socket.emit('throw_grenade', { type: 'smoke', origin: camera.position, dir });
-  if (e.code === 'Digit4') {
-    socket.emit('call_missile', {
-      targetX: controller.x + dir.x * 35,
-      targetZ: controller.z + dir.z * 35
-    });
-  }
+  if (e.code === 'Digit4') socket.emit('call_missile', { targetX: controller.x + dir.x * 35, targetZ: controller.z + dir.z * 35 });
   if (e.code === 'Digit5') socket.emit('deploy_drone', { mode: 'fpv' });
   if (e.code === 'Digit6') socket.emit('deploy_drone', { mode: 'recon' });
   if (e.code === 'KeyX' && activeDroneId) socket.emit('control_drone', { detonate: true });
@@ -462,12 +500,15 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
-// Main 60FPS Render Loop
 let prevTime = performance.now();
 function animate(now) {
   requestAnimationFrame(animate);
   const dt = Math.min(0.05, (now - prevTime) / 1000);
   prevTime = now;
+
+  // Sync mobile virtual joystick into controller
+  controller.virtualMoveX = mobileControls.moveX;
+  controller.virtualMoveY = mobileControls.moveY;
 
   if (localPlayerId && socket) {
     const me = lastSnapshot?.players?.find((p) => p.id === localPlayerId);
@@ -475,10 +516,10 @@ function animate(now) {
 
     if (activeDrone) {
       socket.emit('control_drone', {
-        forward: !!controller.keys.KeyW,
-        backward: !!controller.keys.KeyS,
-        left: !!controller.keys.KeyA,
-        right: !!controller.keys.KeyD,
+        forward: !!controller.keys.KeyW || mobileControls.moveY > 0.2,
+        backward: !!controller.keys.KeyS || mobileControls.moveY < -0.2,
+        left: !!controller.keys.KeyA || mobileControls.moveX < -0.2,
+        right: !!controller.keys.KeyD || mobileControls.moveX > 0.2,
         up: !!controller.keys.Space,
         down: !!controller.keys.ShiftLeft,
         yaw: controller.yaw,

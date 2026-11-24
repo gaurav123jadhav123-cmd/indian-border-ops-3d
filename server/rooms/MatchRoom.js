@@ -3,7 +3,6 @@ const { WEAPON_STATS, traceShot, applyDamage } = require('../systems/ballistics'
 const { AirdropManager } = require('../systems/airdrop');
 const { DroneManager } = require('../systems/drones');
 
-
 const HEAL_ITEMS = {
   bandage: { heal: 15, cap: 75, boost: 0, castMs: 2000 },
   firstAid: { heal: 60, cap: 75, boost: 0, castMs: 3500 },

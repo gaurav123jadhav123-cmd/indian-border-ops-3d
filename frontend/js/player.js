@@ -3,7 +3,7 @@ import { getTerrainHeight, MAP_HALF_SIZE } from './terrain.js';
 
 export function createSoldierMesh(team = 'bharat', callsign = 'Soldier') {
   const group = new THREE.Group();
-  const uniformColor = team === 'bharat' ? 0x4b5d3b : 0x5c3a32; // Olive Drab vs Opfor
+  const uniformColor = team === 'bharat' ? 0x4b5d3b : 0x5c3a32;
   const vestColor = team === 'bharat' ? 0x2d3824 : 0x2b2424;
 
   const torso = new THREE.Mesh(
@@ -61,6 +61,9 @@ export class LocalPlayerController {
     this.grounded = true;
     this.keys = {};
     this.locked = false;
+    this.virtualMoveX = 0;
+    this.virtualMoveY = 0;
+    this.virtualJump = false;
 
     this._bindEvents();
   }
@@ -68,8 +71,8 @@ export class LocalPlayerController {
   _bindEvents() {
     window.addEventListener('keydown', (e) => {
       this.keys[e.code] = true;
-      if (e.code === 'KeyC') this.stance = this.stance === 'crouch' ? 'stand' : 'crouch';
-      if (e.code === 'KeyZ') this.stance = this.stance === 'prone' ? 'stand' : 'prone';
+      if (e.code === 'KeyC') this.toggleCrouch();
+      if (e.code === 'KeyZ') this.toggleProne();
       if (e.code === 'KeyV') this.thirdPerson = !this.thirdPerson;
     });
     window.addEventListener('keyup', (e) => {
@@ -82,22 +85,40 @@ export class LocalPlayerController {
 
     document.addEventListener('mousemove', (e) => {
       if (!this.locked) return;
-      const sens = this.ads ? 0.0012 : 0.0022;
-      this.yaw -= e.movementX * sens;
-      this.pitch = Math.max(-1.42, Math.min(1.42, this.pitch - e.movementY * sens));
+      this.addLookDelta(e.movementX, e.movementY);
     });
   }
 
+  addLookDelta(dx, dy) {
+    const sens = this.ads ? 0.0014 : 0.0028;
+    this.yaw -= dx * sens;
+    this.pitch = Math.max(-1.42, Math.min(1.42, this.pitch - dy * sens));
+  }
+
+  toggleCrouch() {
+    this.stance = this.stance === 'crouch' ? 'stand' : 'crouch';
+  }
+
+  toggleProne() {
+    this.stance = this.stance === 'prone' ? 'stand' : 'prone';
+  }
+
+  triggerJump() {
+    if (this.grounded && this.stance === 'stand') {
+      this.vy = 6.8;
+      this.grounded = false;
+    }
+  }
+
   update(dt, boost = 0, moveSpeedMult = 1.0, skipCamera = false) {
-    // Lean Q/E
     this.lean = (this.keys.KeyE ? 1 : 0) - (this.keys.KeyQ ? 1 : 0);
 
-    const sprinting = !!this.keys.ShiftLeft && this.stance === 'stand' && !this.ads;
+    const sprinting = (!!this.keys.ShiftLeft || this.virtualMoveY > 0.85) && this.stance === 'stand' && !this.ads;
     let baseSpeed = 6.2 * moveSpeedMult;
     if (this.stance === 'crouch') baseSpeed *= 0.62;
     if (this.stance === 'prone') baseSpeed *= 0.34;
     if (sprinting) baseSpeed *= 1.48;
-    if (boost > 20) baseSpeed *= 1.12; // BGMI energy drink speed boost
+    if (boost > 20) baseSpeed *= 1.12;
 
     const forwardX = -Math.sin(this.yaw);
     const forwardZ = -Math.cos(this.yaw);
@@ -111,6 +132,12 @@ export class LocalPlayerController {
     if (this.keys.KeyD) { mx += rightX; mz += rightZ; }
     if (this.keys.KeyA) { mx -= rightX; mz -= rightZ; }
 
+    // Add mobile virtual joystick vector
+    if (Math.abs(this.virtualMoveX) > 0.08 || Math.abs(this.virtualMoveY) > 0.08) {
+      mx += forwardX * this.virtualMoveY + rightX * this.virtualMoveX;
+      mz += forwardZ * this.virtualMoveY + rightZ * this.virtualMoveX;
+    }
+
     const len = Math.hypot(mx, mz);
     if (len > 0) {
       this.x += (mx / len) * baseSpeed * dt;
@@ -121,9 +148,9 @@ export class LocalPlayerController {
     this.z = Math.max(-MAP_HALF_SIZE, Math.min(MAP_HALF_SIZE, this.z));
 
     const groundY = getTerrainHeight(this.x, this.z);
-    if (this.keys.Space && this.grounded && this.stance === 'stand') {
-      this.vy = 6.8;
-      this.grounded = false;
+    if (this.keys.Space || this.virtualJump) {
+      this.triggerJump();
+      this.virtualJump = false;
     }
 
     this.vy -= 18 * dt;
