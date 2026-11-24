@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Indian Border Ops 3D — Tactical PVP FPS</title>
+  <title>Indian Border Ops 3D — Tactical 5v5 PVP</title>
   <link rel="stylesheet" href="css/style.css" />
   <script type="importmap">
     {
@@ -18,9 +18,9 @@
   <div id="lobby-screen" class="overlay">
     <div class="lobby-card">
       <div class="lobby-header">
-        <div class="badge">HIMALAYAN BORDER SECTOR • 3D PVP</div>
+        <div class="badge">HIMALAYAN BORDER SECTOR • 5v5 PVP + AI SQUADS</div>
         <h1>INDIAN BORDER OPS 3D</h1>
-        <p class="subtitle">Authoritative 3D Tactical Shooter • Indian Army Arsenal • Drones • Air Drops</p>
+        <p class="subtitle">3D Tactical Shooter • Indian Army Arsenal • FPV/Recon Drones • Air Drops</p>
       </div>
 
       <div class="lobby-grid">
@@ -35,8 +35,8 @@
           <div class="row">
             <label>Mode
               <select id="mode-select">
-                <option value="TDM">Team Deathmatch (Bharat vs OPFOR)</option>
-                <option value="FFA">Free-For-All</option>
+                <option value="TDM">5v5 Team Deathmatch</option>
+                <option value="FFA">10-Player Free-For-All</option>
               </select>
             </label>
             <label>Sector Room
@@ -68,8 +68,7 @@
       </div>
 
       <div class="controls-bar">
-        <span><b>WASD / Touch Stick</b> Move</span>
-        <span><b>Shift</b> Sprint</span>
+        <span><b>WASD / Stick</b> Move</span>
         <span><b>C/Z</b> Crouch/Prone</span>
         <span><b>Q/E</b> Lean</span>
         <span><b>V</b> 1st/3rd Person</span>
@@ -85,6 +84,7 @@
   <!-- IN-GAME TACTICAL HUD -->
   <div id="hud" class="hidden">
     <div class="hud-top">
+      <canvas id="minimap" class="minimap" width="116" height="116"></canvas>
       <div class="score-box">
         <span class="team-bharat">BHARAT <b id="score-bharat">0</b></span>
         <span class="timer" id="match-timer">08:00</span>
@@ -97,7 +97,7 @@
     <div id="hitmarker" class="hitmarker hidden">✕</div>
     <div id="drone-overlay" class="drone-overlay hidden">
       <div class="drone-label" id="drone-label">FPV ATTACK DRONE [1ST PERSON]</div>
-      <div class="drone-hint">WASD/Stick Fly • Space/Shift Alt • Fire/X Detonate</div>
+      <div class="drone-hint">Fly: WASD/Stick • Alt: Space/Shift or UP/DN • Detonate: Fire/X • Exit: Esc</div>
     </div>
     <div id="airdrop-prompt" class="prompt-banner hidden">Tap / Press [F] to Loot Air Drop Crate</div>
     <div id="alert-banner" class="alert-banner hidden"></div>
@@ -118,6 +118,11 @@
         <button id="btn-fpv" class="m-btn">FPV</button>
         <button id="btn-recon" class="m-btn">RCN</button>
       </div>
+      <div id="mobile-drone-controls" class="mobile-drone-controls hidden">
+        <button id="btn-drone-up" class="m-btn">UP</button>
+        <button id="btn-drone-down" class="m-btn">DN</button>
+        <button id="btn-drone-exit" class="m-btn">EXIT</button>
+      </div>
       <div class="mobile-right-actions">
         <button id="btn-fire" class="m-btn fire">FIRE</button>
         <button id="btn-ads" class="m-btn">ADS</button>
@@ -125,6 +130,8 @@
         <button id="btn-jump" class="m-btn">JMP</button>
         <button id="btn-crouch" class="m-btn">CRC</button>
         <button id="btn-prone" class="m-btn">PRN</button>
+        <button id="btn-lean-l" class="m-btn">L&lt;</button>
+        <button id="btn-lean-r" class="m-btn">&gt;R</button>
       </div>
     </div>
 
@@ -143,7 +150,7 @@
           <div class="bar"><div id="boost-bar" class="bar-fill boost"></div></div>
         </div>
         <div class="stance-line">
-          Stance: <b id="stance-val">STAND</b> • Camera: <b id="cam-val">1ST PERSON</b>
+          Stance: <b id="stance-val">STAND</b> • Cam: <b id="cam-val">1ST</b>
         </div>
       </div>
 
@@ -151,22 +158,21 @@
         <div class="gear-chip" id="gear-frag">[G] Frag: <b>2</b></div>
         <div class="gear-chip" id="gear-smoke">[T] Smoke: <b>2</b></div>
         <div class="gear-chip" id="gear-missile">[4] Missile: <b>RDY</b></div>
-        <div class="gear-chip" id="gear-fpv">[5] FPV Drone: <b>RDY</b></div>
-        <div class="gear-chip" id="gear-recon">[6] Recon Drone: <b>RDY</b></div>
-        <div class="gear-chip" id="gear-heal">[7] Bandage [8] FirstAid [9] Medkit [0] Energy</div>
+        <div class="gear-chip" id="gear-fpv">[5] FPV: <b>RDY</b></div>
+        <div class="gear-chip" id="gear-recon">[6] Recon: <b>RDY</b></div>
+        <div class="gear-chip" id="gear-heal">[7-0] Heal/Boost</div>
       </div>
 
       <div class="weapon-box">
         <div class="weapon-name" id="weapon-name">SIG 716 G2</div>
         <div class="ammo-count"><span id="ammo-val">20</span> / <span id="mag-val">20</span></div>
-        <div class="slot-hint">[1] Primary • [2] Sidearm • [3] Carl Gustaf • [R] Reload</div>
+        <div class="slot-hint">[1] Primary • [2] Sidearm • [3] Launcher</div>
       </div>
     </div>
   </div>
 
-  <!-- RESPAWN / MATCH END BANNER -->
   <div id="respawn-overlay" class="respawn-overlay hidden">
-    <h2>KIA — RESPAWNING IN <span id="respawn-sec">4</span>s</h2>
+    <h2>KIA — RESPAWNING...</h2>
   </div>
 
   <canvas id="game-canvas"></canvas>

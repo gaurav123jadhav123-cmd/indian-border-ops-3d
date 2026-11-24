@@ -2,6 +2,9 @@ const { getTerrainHeight, MAP_HALF_SIZE } = require('../systems/terrainHeight');
 const { WEAPON_STATS, traceShot, applyDamage } = require('../systems/ballistics');
 const { AirdropManager } = require('../systems/airdrop');
 const { DroneManager } = require('../systems/drones');
+const { BotManager } = require('../systems/bots');
+
+const TARGET_ROOM_PLAYERS = 10; // 5v5 PVP Match
 
 const HEAL_ITEMS = {
   bandage: { heal: 15, cap: 75, boost: 0, castMs: 2000 },
@@ -13,34 +16,37 @@ const HEAL_ITEMS = {
 class MatchRoom {
   constructor(roomId, mode = 'TDM', io, onMatchEnd) {
     this.roomId = roomId;
-    this.mode = mode; // 'TDM' or 'FFA'
+    this.mode = mode;
     this.io = io;
     this.onMatchEnd = onMatchEnd;
     this.players = new Map();
     this.airdrops = new AirdropManager();
     this.drones = new DroneManager();
+    this.bots = new BotManager(this);
     this.grenades = [];
     this.missiles = [];
     this.scores = { bharat: 0, opfor: 0 };
-    this.scoreLimit = 25;
+    this.scoreLimit = 40;
     this.matchEndAt = Date.now() + 8 * 60 * 1000;
     this.ended = false;
     this.seq = 1;
 
-    this.tickInterval = setInterval(() => this.tick(), 33); // 30Hz authoritative tick
+    this.tickInterval = setInterval(() => this.tick(), 50); // Smooth 20Hz authoritative tick
   }
 
   addPlayer(socket, { callsign, loadout, team }) {
     let assignedTeam = team;
     if (!assignedTeam) {
-      const bharatCount = Array.from(this.players.values()).filter((p) => p.team === 'bharat').length;
-      const opforCount = Array.from(this.players.values()).filter((p) => p.team === 'opfor').length;
-      assignedTeam = bharatCount <= opforCount ? 'bharat' : 'opfor';
+      const humans = Array.from(this.players.values()).filter((p) => !p.isBot);
+      const bharatHumans = humans.filter((p) => p.team === 'bharat').length;
+      const opforHumans = humans.filter((p) => p.team === 'opfor').length;
+      assignedTeam = bharatHumans <= opforHumans ? 'bharat' : 'opfor';
     }
 
-    const spawn = this.getSpawnPoint(assignedTeam);
+    const spawn = this.getSpawnPoint(assignedTeam, false);
     const player = {
       id: socket.id,
+      isBot: false,
       callsign: callsign || `Soldier_${socket.id.slice(0, 4)}`,
       team: assignedTeam,
       mode: this.mode,
@@ -49,8 +55,8 @@ class MatchRoom {
       z: spawn.z,
       yaw: assignedTeam === 'bharat' ? 0 : Math.PI,
       pitch: 0,
-      stance: 'stand', // stand | crouch | prone
-      lean: 0,         // -1 | 0 | 1
+      stance: 'stand',
+      lean: 0,
       sprinting: false,
       hp: 100,
       armor: 50,
@@ -83,26 +89,30 @@ class MatchRoom {
         reconDroneReady: true
       },
       lastShotAt: 0,
-      activeDroneId: null,
-      healingUntil: 0
+      activeDroneId: null
     };
 
     this.players.set(socket.id, player);
     socket.join(this.roomId);
+    this.bots.syncBotCount(TARGET_ROOM_PLAYERS);
     return player;
   }
 
   removePlayer(socketId) {
     this.players.delete(socketId);
-    if (this.players.size === 0) {
+    const remainingHumans = Array.from(this.players.values()).filter((p) => !p.isBot).length;
+    if (remainingHumans === 0) {
+      this.players.clear();
       clearInterval(this.tickInterval);
+    } else {
+      this.bots.syncBotCount(TARGET_ROOM_PLAYERS);
     }
   }
 
-  getSpawnPoint(team) {
-    const baseZ = team === 'bharat' ? -92 : 92;
-    const x = (Math.random() - 0.5) * 36;
-    const z = baseZ + (Math.random() - 0.5) * 14;
+  getSpawnPoint(team, isBot = false) {
+    const baseZ = isBot ? (team === 'bharat' ? -48 : 48) : (team === 'bharat' ? -68 : 68);
+    const x = (Math.random() - 0.5) * 44;
+    const z = baseZ + (Math.random() - 0.5) * 16;
     return { x, y: getTerrainHeight(x, z), z };
   }
 
@@ -146,13 +156,12 @@ class MatchRoom {
     const weaponId = p.loadout[p.activeSlot] || 'sig716';
     const stats = WEAPON_STATS[weaponId] || WEAPON_STATS.sig716;
 
-    if (now - p.lastShotAt < stats.fireRateMs * 0.8) return;
+    if (now - p.lastShotAt < stats.fireRateMs * 0.75) return;
     if (p.ammo[p.activeSlot] <= 0) return;
 
     p.lastShotAt = now;
     p.ammo[p.activeSlot] -= 1;
 
-    // Carl Gustaf explosive rocket
     if (weaponId === 'carlGustaf') {
       const len = Math.hypot(dir.x, dir.y, dir.z) || 1;
       const ndir = { x: dir.x / len, y: dir.y / len, z: dir.z / len };
@@ -167,21 +176,18 @@ class MatchRoom {
     }
 
     const { closestHit } = traceShot(p, origin, dir, weaponId, this.players);
-    this.io.to(this.roomId).emit('shot_fired', {
-      shooterId: p.id,
-      weaponId,
-      origin,
-      dir
-    });
+    this.io.to(this.roomId).emit('shot_fired', { shooterId: p.id, weaponId, origin, dir });
 
     if (closestHit) {
       const dmg = Math.round(stats.damage * (closestHit.headshot ? stats.headshotMult : 1));
       const dealt = applyDamage(closestHit.target, dmg);
-      this.io.to(p.id).emit('hit_confirm', {
-        targetId: closestHit.target.id,
-        damage: dealt,
-        headshot: closestHit.headshot
-      });
+      if (!p.isBot) {
+        this.io.to(p.id).emit('hit_confirm', {
+          targetId: closestHit.target.id,
+          damage: dealt,
+          headshot: closestHit.headshot
+        });
+      }
 
       if (closestHit.target.hp <= 0) {
         this.registerKill(p, closestHit.target, stats.name, closestHit.headshot);
@@ -191,8 +197,7 @@ class MatchRoom {
 
   handleThrowGrenade(socketId, { type, origin, dir }) {
     const p = this.players.get(socketId);
-    if (!p || !p.alive) return;
-    if (!p.inventory[type] || p.inventory[type] <= 0) return;
+    if (!p || !p.alive || !p.inventory[type]) return;
 
     p.inventory[type] -= 1;
     const len = Math.hypot(dir.x, dir.y, dir.z) || 1;
@@ -200,7 +205,7 @@ class MatchRoom {
     const grenade = {
       id: `nade_${this.seq++}`,
       ownerId: p.id,
-      type, // 'frag' or 'smoke'
+      type,
       x: origin.x,
       y: origin.y,
       z: origin.z,
@@ -257,6 +262,10 @@ class MatchRoom {
   handleControlDrone(socketId, input) {
     const p = this.players.get(socketId);
     if (!p || !p.activeDroneId) return;
+    if (input.exit) {
+      p.activeDroneId = null;
+      return;
+    }
     if (input.detonate) {
       const res = this.drones.detonateDrone(p.activeDroneId, this.players, (k, v, w) => this.registerKill(k, v, w));
       p.activeDroneId = null;
@@ -272,12 +281,8 @@ class MatchRoom {
     if (!p || !p.alive || !item || !p.inventory[itemKey]) return;
     p.inventory[itemKey] -= 1;
 
-    if (item.heal > 0 && p.hp < item.cap) {
-      p.hp = Math.min(item.cap, p.hp + item.heal);
-    }
-    if (item.boost > 0) {
-      p.boost = Math.min(100, p.boost + item.boost);
-    }
+    if (item.heal > 0 && p.hp < item.cap) p.hp = Math.min(item.cap, p.hp + item.heal);
+    if (item.boost > 0) p.boost = Math.min(100, p.boost + item.boost);
     this.io.to(socketId).emit('heal_applied', { itemKey, hp: p.hp, boost: p.boost, inventory: p.inventory });
   }
 
@@ -320,9 +325,7 @@ class MatchRoom {
     if (killer.id !== victim.id) {
       killer.kills += 1;
       killer.streak += 1;
-      if (this.mode === 'TDM') {
-        this.scores[killer.team] += 1;
-      }
+      if (this.mode === 'TDM') this.scores[killer.team] += 1;
     }
 
     this.io.to(this.roomId).emit('kill_feed', {
@@ -343,30 +346,30 @@ class MatchRoom {
     if (this.ended) return;
     const now = Date.now();
 
-    // 1. Respawns & BGMI-style Energy Boost Passive Heal
     for (const p of this.players.values()) {
       if (!p.alive && now >= p.respawnAt) {
-        const spawn = this.getSpawnPoint(p.team);
+        const spawn = this.getSpawnPoint(p.team, p.isBot);
         p.x = spawn.x;
         p.y = spawn.y;
         p.z = spawn.z;
         p.hp = 100;
         p.armor = 50;
         p.alive = true;
-        this.io.to(p.id).emit('respawned', { x: p.x, y: p.y, z: p.z });
+        if (!p.isBot) this.io.to(p.id).emit('respawned', { x: p.x, y: p.y, z: p.z });
       } else if (p.alive && p.boost > 0) {
         if (Math.random() < 0.08 && p.hp < 100) p.hp = Math.min(100, p.hp + 1);
         p.boost = Math.max(0, p.boost - 0.08);
       }
     }
 
-    // 2. Grenades Physics
+    this.bots.update(now);
+
     for (let i = this.grenades.length - 1; i >= 0; i--) {
       const g = this.grenades[i];
-      g.vy -= 14 * 0.033;
-      g.x += g.vx * 0.033;
-      g.y += g.vy * 0.033;
-      g.z += g.vz * 0.033;
+      g.vy -= 14 * 0.05;
+      g.x += g.vx * 0.05;
+      g.y += g.vy * 0.05;
+      g.z += g.vz * 0.05;
       const ground = getTerrainHeight(g.x, g.z);
       if (g.y < ground + 0.15) {
         g.y = ground + 0.15;
@@ -386,10 +389,9 @@ class MatchRoom {
       }
     }
 
-    // 3. Tactical Missiles
     for (let i = this.missiles.length - 1; i >= 0; i--) {
       const m = this.missiles[i];
-      m.y -= 1.8;
+      m.y -= 2.4;
       if (m.y <= m.targetY) {
         const owner = this.players.get(m.ownerId);
         this.explodeAt(m.x, m.targetY, m.z, 15.0, 145, owner, 'Tactical Missile Strike');
@@ -398,11 +400,8 @@ class MatchRoom {
       }
     }
 
-    // 4. Air Drops & Drones
     const airdropEvents = this.airdrops.update(now);
-    for (const ev of airdropEvents) {
-      this.io.to(this.roomId).emit(ev.type, ev.crate);
-    }
+    for (const ev of airdropEvents) this.io.to(this.roomId).emit(ev.type, ev.crate);
     const expiredDrones = this.drones.update(now);
     for (const dId of expiredDrones) {
       for (const p of this.players.values()) {
@@ -410,13 +409,11 @@ class MatchRoom {
       }
     }
 
-    // 5. Match timer check
     if (now >= this.matchEndAt) {
       this.finishMatch();
       return;
     }
 
-    // 6. Broadcast 30Hz authoritative snapshot
     this.io.to(this.roomId).emit('state_snapshot', {
       t: now,
       timeLeftSec: Math.max(0, Math.round((this.matchEndAt - now) / 1000)),
@@ -438,12 +435,14 @@ class MatchRoom {
       winnerTeam,
       scores: this.scores,
       mode: this.mode,
-      players: Array.from(this.players.values()).map((p) => ({
-        callsign: p.callsign,
-        team: p.team,
-        kills: p.kills,
-        deaths: p.deaths
-      }))
+      players: Array.from(this.players.values())
+        .filter((p) => !p.isBot)
+        .map((p) => ({
+          callsign: p.callsign,
+          team: p.team,
+          kills: p.kills,
+          deaths: p.deaths
+        }))
     };
     this.io.to(this.roomId).emit('match_ended', summary);
     if (this.onMatchEnd) this.onMatchEnd(summary);

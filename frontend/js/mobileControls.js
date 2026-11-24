@@ -1,4 +1,4 @@
-// Mobile Touch Controls: Virtual Joystick + Touch-Drag Aim + Action Buttons
+// Mobile Touch Controls: Full-Screen Aim + Virtual Joystick + Hold-to-Fire + Drone Controls
 
 export class MobileControls {
   constructor(callbacks) {
@@ -9,17 +9,22 @@ export class MobileControls {
       window.matchMedia('(pointer: coarse)').matches;
 
     this.moveX = 0;
-    this.moveY = 0; // +1 = forward, -1 = backward
+    this.moveY = 0;
+    this.firing = false;
+    this.droneUp = false;
+    this.droneDown = false;
 
     this._joyTouchId = null;
     this._joyCenter = { x: 0, y: 0 };
     this._lookTouchId = null;
     this._lastLook = { x: 0, y: 0 };
+    this._fireInterval = null;
 
     this.container = document.getElementById('mobile-controls');
     this.joyBase = document.getElementById('joy-base');
     this.joyKnob = document.getElementById('joy-knob');
     this.lookZone = document.getElementById('touch-look-zone');
+    this.droneControls = document.getElementById('mobile-drone-controls');
 
     if (this.container) {
       this._bindEvents();
@@ -33,13 +38,37 @@ export class MobileControls {
   }
 
   hide() {
-    if (this.container) {
-      this.container.classList.add('hidden');
+    if (this.container) this.container.classList.add('hidden');
+    this.stopFireLoop();
+  }
+
+  setDroneMode(active) {
+    if (!this.droneControls) return;
+    if (active) this.droneControls.classList.remove('hidden');
+    else {
+      this.droneControls.classList.add('hidden');
+      this.droneUp = false;
+      this.droneDown = false;
+    }
+  }
+
+  startFireLoop() {
+    if (this._fireInterval) return;
+    this.callbacks.onFire();
+    this._fireInterval = setInterval(() => {
+      if (this.firing) this.callbacks.onFire();
+    }, 95);
+  }
+
+  stopFireLoop() {
+    this.firing = false;
+    if (this._fireInterval) {
+      clearInterval(this._fireInterval);
+      this._fireInterval = null;
     }
   }
 
   _bindEvents() {
-    // Left Virtual Joystick
     this.joyBase.addEventListener('touchstart', (e) => {
       e.preventDefault();
       const t = e.changedTouches[0];
@@ -80,7 +109,6 @@ export class MobileControls {
     window.addEventListener('touchend', endTouch);
     window.addEventListener('touchcancel', endTouch);
 
-    // Right Touch-Drag Aim Zone
     this.lookZone.addEventListener('touchstart', (e) => {
       e.preventDefault();
       if (this._lookTouchId !== null) return;
@@ -89,7 +117,6 @@ export class MobileControls {
       this._lastLook = { x: t.clientX, y: t.clientY };
     }, { passive: false });
 
-    // Action Buttons
     const bindBtn = (id, fn) => {
       const el = document.getElementById(id);
       if (!el) return;
@@ -106,7 +133,9 @@ export class MobileControls {
     };
 
     bindBtn('btn-fire', (down) => {
-      if (down) this.callbacks.onFire();
+      this.firing = down;
+      if (down) this.startFireLoop();
+      else this.stopFireLoop();
     });
     bindBtn('btn-ads', (down) => this.callbacks.onAds(down));
     bindBtn('btn-jump', (down) => { if (down) this.callbacks.onJump(); });
@@ -121,6 +150,11 @@ export class MobileControls {
     bindBtn('btn-fpv', (down) => { if (down) this.callbacks.onFpvDrone(); });
     bindBtn('btn-recon', (down) => { if (down) this.callbacks.onReconDrone(); });
     bindBtn('btn-heal', (down) => { if (down) this.callbacks.onHeal(); });
+    bindBtn('btn-lean-l', (down) => this.callbacks.onLean(down ? -1 : 0));
+    bindBtn('btn-lean-r', (down) => this.callbacks.onLean(down ? 1 : 0));
+    bindBtn('btn-drone-up', (down) => { this.droneUp = down; });
+    bindBtn('btn-drone-down', (down) => { this.droneDown = down; });
+    bindBtn('btn-drone-exit', (down) => { if (down) this.callbacks.onDroneExit(); });
   }
 
   _updateJoystick(clientX, clientY) {
