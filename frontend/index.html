@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Indian Border Ops 3D — Tactical PVP FPS</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <!-- LOBBY & LOADOUT SCREEN -->
+  <div id="lobby-screen" class="overlay">
+    <div class="lobby-card">
+      <div class="lobby-header">
+        <div class="badge">HIMALAYAN BORDER SECTOR • 3D PVP</div>
+        <h1>INDIAN BORDER OPS 3D</h1>
+        <p class="subtitle">Authoritative 3D Tactical Shooter • Indian Army Arsenal • Drones • Air Drops</p>
+      </div>
+
+      <div class="lobby-grid">
+        <div class="panel">
+          <h2>1. Operator & Match</h2>
+          <label>Callsign
+            <input id="callsign-input" type="text" placeholder="e.g. ParaSF_01" maxlength="18" value="Vikram_SF" />
+          </label>
+          <label>Password (optional)
+            <input id="password-input" type="password" placeholder="Optional for saved stats" />
+          </label>
+          <div class="row">
+            <label>Mode
+              <select id="mode-select">
+                <option value="TDM">Team Deathmatch (Bharat vs OPFOR)</option>
+                <option value="FFA">Free-For-All</option>
+              </select>
+            </label>
+            <label>Sector Room
+              <input id="room-input" type="text" value="border-sector-1" />
+            </label>
+          </div>
+          <button id="deploy-btn" class="btn-primary">DEPLOY TO BORDER SECTOR</button>
+          <div id="lobby-status" class="status-msg"></div>
+        </div>
+
+        <div class="panel">
+          <h2>2. Indian Army Loadout</h2>
+          <label>Primary Weapon
+            <select id="primary-select"></select>
+          </label>
+          <label>Secondary Sidearm
+            <select id="secondary-select"></select>
+          </label>
+          <label>Anti-Armor / Launcher
+            <select id="launcher-select"></select>
+          </label>
+          <div id="weapon-preview-info" class="weapon-info"></div>
+        </div>
+
+        <div class="panel">
+          <h2>3. Sector Leaderboard</h2>
+          <div id="leaderboard-list" class="leaderboard-list">Loading...</div>
+        </div>
+      </div>
+
+      <div class="controls-bar">
+        <span><b>WASD</b> Move</span>
+        <span><b>Shift</b> Sprint</span>
+        <span><b>C/Z</b> Crouch/Prone</span>
+        <span><b>Q/E</b> Lean</span>
+        <span><b>V</b> 1st/3rd Person</span>
+        <span><b>G/T</b> Frag/Smoke</span>
+        <span><b>4</b> Missile</span>
+        <span><b>5/6</b> FPV/Recon Drone</span>
+        <span><b>7-0</b> Heal/Boost</span>
+        <span><b>F</b> Loot Air Drop</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- IN-GAME TACTICAL HUD -->
+  <div id="hud" class="hidden">
+    <div class="hud-top">
+      <div class="score-box">
+        <span class="team-bharat">BHARAT <b id="score-bharat">0</b></span>
+        <span class="timer" id="match-timer">08:00</span>
+        <span class="team-opfor"><b id="score-opfor">0</b> OPFOR</span>
+      </div>
+      <div id="kill-feed" class="kill-feed"></div>
+    </div>
+
+    <div id="crosshair" class="crosshair">+</div>
+    <div id="hitmarker" class="hitmarker hidden">✕</div>
+    <div id="drone-overlay" class="drone-overlay hidden">
+      <div class="drone-label" id="drone-label">FPV ATTACK DRONE [1ST PERSON]</div>
+      <div class="drone-hint">WASD Fly • Space/Shift Alt • Left Click / X Detonate • Esc Exit</div>
+    </div>
+    <div id="airdrop-prompt" class="prompt-banner hidden">Press [F] to Loot Air Drop Crate</div>
+    <div id="alert-banner" class="alert-banner hidden"></div>
+
+    <div class="hud-bottom">
+      <div class="vitals-box">
+        <div class="stat-row">
+          <span>HP <b id="hp-val">100</b></span>
+          <div class="bar"><div id="hp-bar" class="bar-fill hp"></div></div>
+        </div>
+        <div class="stat-row">
+          <span>ARMOR <b id="armor-val">50</b></span>
+          <div class="bar"><div id="armor-bar" class="bar-fill armor"></div></div>
+        </div>
+        <div class="stat-row">
+          <span>BOOST <b id="boost-val">0</b></span>
+          <div class="bar"><div id="boost-bar" class="bar-fill boost"></div></div>
+        </div>
+        <div class="stance-line">
+          Stance: <b id="stance-val">STAND</b> • Camera: <b id="cam-val">1ST PERSON</b>
+        </div>
+      </div>
+
+      <div class="gear-box">
+        <div class="gear-chip" id="gear-frag">[G] Frag: <b>2</b></div>
+        <div class="gear-chip" id="gear-smoke">[T] Smoke: <b>2</b></div>
+        <div class="gear-chip" id="gear-missile">[4] Missile: <b>RDY</b></div>
+        <div class="gear-chip" id="gear-fpv">[5] FPV Drone: <b>RDY</b></div>
+        <div class="gear-chip" id="gear-recon">[6] Recon Drone: <b>RDY</b></div>
+        <div class="gear-chip" id="gear-heal">[7] Bandage [8] FirstAid [9] Medkit [0] Energy</div>
+      </div>
+
+      <div class="weapon-box">
+        <div class="weapon-name" id="weapon-name">SIG 716 G2</div>
+        <div class="ammo-count"><span id="ammo-val">20</span> / <span id="mag-val">20</span></div>
+        <div class="slot-hint">[1] Primary • [2] Sidearm • [3] Carl Gustaf • [R] Reload</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RESPAWN / MATCH END BANNER -->
+  <div id="respawn-overlay" class="respawn-overlay hidden">
+    <h2>KIA — RESPAWNING IN <span id="respawn-sec">4</span>s</h2>
+  </div>
+
+  <canvas id="game-canvas"></canvas>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

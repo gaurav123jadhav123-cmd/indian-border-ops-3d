@@ -1,0 +1,133 @@
+* { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', system-ui, sans-serif; }
+body, html { width: 100%; height: 100%; overflow: hidden; background: #0b0f14; color: #e6edf3; }
+#game-canvas { display: block; width: 100vw; height: 100vh; }
+.hidden { display: none !important; }
+
+.overlay {
+  position: fixed; inset: 0; z-index: 20;
+  background: radial-gradient(circle at top, rgba(22, 34, 48, 0.96), rgba(8, 12, 17, 0.98));
+  display: flex; align-items: center; justify-content: center; padding: 20px; overflow-y: auto;
+}
+.lobby-card {
+  width: 100%; max-width: 1120px; background: rgba(16, 23, 32, 0.92);
+  border: 1px solid #2b3a4a; border-radius: 14px; padding: 24px;
+  box-shadow: 0 24px 60px rgba(0,0,0,0.65);
+}
+.lobby-header { margin-bottom: 18px; }
+.badge {
+  display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: 1.5px;
+  padding: 4px 10px; border-radius: 4px; background: #ff993322; color: #ff9933; border: 1px solid #ff993355;
+  margin-bottom: 8px;
+}
+.lobby-header h1 { font-size: 28px; letter-spacing: 1px; color: #ffffff; }
+.subtitle { color: #8fa3b8; font-size: 13px; margin-top: 4px; }
+
+.lobby-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 16px; }
+.panel {
+  background: #121a24; border: 1px solid #223040; border-radius: 10px; padding: 16px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.panel h2 { font-size: 15px; color: #ff9933; border-bottom: 1px solid #223040; padding-bottom: 6px; }
+label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #9fb2c7; }
+input, select {
+  background: #0b1017; border: 1px solid #2b3a4a; border-radius: 6px;
+  padding: 8px 10px; color: #fff; font-size: 13px; outline: none;
+}
+input:focus, select:focus { border-color: #ff9933; }
+.row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
+.btn-primary {
+  margin-top: 6px; padding: 12px; border: none; border-radius: 8px; cursor: pointer;
+  background: linear-gradient(135deg, #ff9933, #e66b00); color: #091017;
+  font-weight: 800; font-size: 14px; letter-spacing: 0.8px; transition: transform 0.1s;
+}
+.btn-primary:hover { transform: translateY(-1px); filter: brightness(1.06); }
+.status-msg { font-size: 12px; color: #6ee7b7; min-height: 16px; }
+.weapon-info { font-size: 12px; color: #b7c8d9; background: #0c1219; padding: 10px; border-radius: 6px; line-height: 1.5; }
+.leaderboard-list { font-size: 12px; display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; }
+.lb-row { display: flex; justify-content: space-between; padding: 6px 8px; background: #0c1219; border-radius: 5px; }
+
+.controls-bar {
+  margin-top: 16px; padding-top: 12px; border-top: 1px solid #223040;
+  display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: #9fb2c7;
+}
+.controls-bar b { color: #ff9933; }
+
+/* HUD */
+#hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+.hud-top { position: absolute; top: 14px; left: 16px; right: 16px; display: flex; justify-content: space-between; align-items: flex-start; }
+.score-box {
+  background: rgba(10, 15, 22, 0.78); border: 1px solid #2a394a; border-radius: 8px;
+  padding: 8px 16px; display: flex; gap: 18px; align-items: center; font-size: 14px;
+}
+.team-bharat { color: #ff9933; }
+.team-opfor { color: #f87171; }
+.timer { font-weight: 700; color: #fff; font-size: 16px; }
+
+.kill-feed { display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
+.kill-item {
+  background: rgba(10, 15, 22, 0.8); padding: 4px 10px; border-radius: 4px;
+  font-size: 12px; border-right: 3px solid #ff9933;
+}
+
+.crosshair {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  font-size: 22px; color: rgba(255, 255, 255, 0.88); font-weight: 300; text-shadow: 0 0 4px #000;
+}
+.hitmarker {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  font-size: 24px; color: #ff3b30; font-weight: 900;
+}
+
+.drone-overlay {
+  position: absolute; inset: 24px; border: 2px dashed rgba(56, 189, 248, 0.65);
+  border-radius: 12px; display: flex; flex-direction: column; justify-content: space-between;
+  padding: 14px; background: rgba(6, 24, 38, 0.14);
+}
+.drone-label { font-weight: 800; color: #38bdf8; letter-spacing: 1.5px; }
+.drone-hint { font-size: 12px; color: #bae6fd; }
+
+.prompt-banner {
+  position: absolute; bottom: 155px; left: 50%; transform: translateX(-50%);
+  background: rgba(255, 153, 51, 0.92); color: #091017; font-weight: 800;
+  padding: 7px 16px; border-radius: 6px; font-size: 13px;
+}
+.alert-banner {
+  position: absolute; top: 72px; left: 50%; transform: translateX(-50%);
+  background: rgba(220, 38, 38, 0.88); color: #fff; font-weight: 700;
+  padding: 7px 18px; border-radius: 6px; font-size: 13px;
+}
+
+.hud-bottom {
+  position: absolute; bottom: 16px; left: 16px; right: 16px;
+  display: flex; justify-content: space-between; align-items: flex-end; gap: 14px;
+}
+.vitals-box, .weapon-box {
+  background: rgba(10, 15, 22, 0.82); border: 1px solid #2a394a; border-radius: 10px;
+  padding: 12px 14px; min-width: 240px;
+}
+.stat-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; font-size: 12px; }
+.bar { width: 140px; height: 8px; background: #1e293b; border-radius: 4px; overflow: hidden; }
+.bar-fill { height: 100%; width: 100%; transition: width 0.12s; }
+.bar-fill.hp { background: #22c55e; }
+.bar-fill.armor { background: #38bdf8; }
+.bar-fill.boost { background: #f59e0b; width: 0%; }
+.stance-line { font-size: 11px; color: #9fb2c7; margin-top: 4px; }
+
+.gear-box {
+  display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; max-width: 480px;
+}
+.gear-chip {
+  background: rgba(10, 15, 22, 0.8); border: 1px solid #2a394a; border-radius: 6px;
+  padding: 5px 9px; font-size: 11px; color: #cbd5e1;
+}
+
+.weapon-box { text-align: right; }
+.weapon-name { font-size: 15px; font-weight: 800; color: #ff9933; }
+.ammo-count { font-size: 26px; font-weight: 800; color: #fff; margin: 2px 0; }
+.slot-hint { font-size: 11px; color: #94a3b8; }
+
+.respawn-overlay {
+  position: fixed; inset: 0; z-index: 15; background: rgba(120, 15, 15, 0.45);
+  display: flex; align-items: center; justify-content: center; font-size: 22px; letter-spacing: 2px;
+}

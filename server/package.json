@@ -1,0 +1,14 @@
+{
+  "name": "indian-border-ops-server",
+  "version": "1.0.0",
+  "description": "Authoritative 30Hz Multiplayer PVP Game Server for Indian Border Ops 3D",
+  "main": "gameServer.js",
+  "scripts": {
+    "start": "node gameServer.js",
+    "dev": "node gameServer.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "socket.io": "^4.7.4"
+  }
+}
