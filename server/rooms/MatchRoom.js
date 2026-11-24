@@ -1,7 +1,8 @@
-const { getTerrainHeight, MAP_HALF_SIZE } = require('./terrainHeight');
-const { WEAPON_STATS, traceShot, applyDamage } = require('./ballistics');
-const { AirdropManager } = require('./airdrop');
-const { DroneManager } = require('./drones');
+const { getTerrainHeight, MAP_HALF_SIZE } = require('../systems/terrainHeight');
+const { WEAPON_STATS, traceShot, applyDamage } = require('../systems/ballistics');
+const { AirdropManager } = require('../systems/airdrop');
+const { DroneManager } = require('../systems/drones');
+
 
 const HEAL_ITEMS = {
   bandage: { heal: 15, cap: 75, boost: 0, castMs: 2000 },
