@@ -3,6 +3,8 @@ const path = require('path');
 const crypto = require('crypto');
 
 const DB_PATH = path.join(__dirname, 'db.json');
+const TMP_PATH = path.join(__dirname, 'db.json.tmp');
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 const DEFAULT_LOADOUT = {
   primary: 'sig716',
@@ -11,6 +13,25 @@ const DEFAULT_LOADOUT = {
   tactical: 'smoke',
   lethal: 'frag'
 };
+
+const RANKS = [
+  { minScore: 0, title: 'Sepoy' },
+  { minScore: 500, title: 'Naik' },
+  { minScore: 1500, title: 'Havildar' },
+  { minScore: 3000, title: 'Subedar' },
+  { minScore: 6000, title: 'Captain' },
+  { minScore: 10000, title: 'Major' },
+  { minScore: 18000, title: 'Colonel' },
+  { minScore: 30000, title: 'Brigadier' }
+];
+
+function getRankTitle(score) {
+  let title = RANKS[0].title;
+  for (const r of RANKS) {
+    if (score >= r.minScore) title = r.title;
+  }
+  return title;
+}
 
 function loadDb() {
   try {
@@ -27,10 +48,23 @@ let db = loadDb();
 
 function saveDb() {
   try {
-    fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
+    fs.writeFileSync(TMP_PATH, JSON.stringify(db, null, 2));
+    fs.renameSync(TMP_PATH, DB_PATH);
   } catch (err) {
     console.error('Failed to persist db.json:', err.message);
   }
+}
+
+function pruneExpiredSessions() {
+  const now = Date.now();
+  let changed = false;
+  for (const [token, sess] of Object.entries(db.sessions)) {
+    if (!sess || now - sess.createdAt > SESSION_TTL_MS) {
+      delete db.sessions[token];
+      changed = true;
+    }
+  }
+  if (changed) saveDb();
 }
 
 function hashPassword(password, salt = crypto.randomBytes(8).toString('hex')) {
@@ -45,16 +79,17 @@ function verifyPassword(password, stored) {
 }
 
 function registerUser(callsign, password) {
-  const key = callsign.trim().toLowerCase();
-  if (!key || key.length < 2 || key.length > 20) {
-    throw new Error('Callsign must be 2-20 characters.');
+  const clean = String(callsign || '').trim();
+  const key = clean.toLowerCase();
+  if (!/^[a-zA-Z0-9_-]{2,20}$/.test(clean)) {
+    throw new Error('Callsign must be 2-20 characters (letters, numbers, _ or -).');
   }
   if (db.users[key]) {
     throw new Error('Callsign already registered.');
   }
   const user = {
     id: crypto.randomUUID(),
-    callsign: callsign.trim(),
+    callsign: clean,
     passwordHash: hashPassword(password || 'borderops'),
     loadout: { ...DEFAULT_LOADOUT },
     stats: { kills: 0, deaths: 0, wins: 0, matchesPlayed: 0, score: 0 },
@@ -67,10 +102,11 @@ function registerUser(callsign, password) {
 }
 
 function loginUser(callsign, password) {
-  const key = callsign.trim().toLowerCase();
+  const clean = String(callsign || '').trim();
+  const key = clean.toLowerCase();
   const user = db.users[key];
   if (!user) {
-    return registerUser(callsign, password);
+    return registerUser(clean, password);
   }
   if (password && !verifyPassword(password, user.passwordHash)) {
     throw new Error('Invalid password for existing callsign.');
@@ -81,6 +117,7 @@ function loginUser(callsign, password) {
 }
 
 function createSession(callsign) {
+  pruneExpiredSessions();
   const token = crypto.randomBytes(24).toString('hex');
   db.sessions[token] = { callsign, createdAt: Date.now() };
   return token;
@@ -88,8 +125,13 @@ function createSession(callsign) {
 
 function getUserByToken(token) {
   if (!token || !db.sessions[token]) return null;
-  const key = db.sessions[token].callsign.toLowerCase();
-  return db.users[key] || null;
+  const sess = db.sessions[token];
+  if (Date.now() - sess.createdAt > SESSION_TTL_MS) {
+    delete db.sessions[token];
+    saveDb();
+    return null;
+  }
+  return db.users[sess.callsign.toLowerCase()] || null;
 }
 
 function updateLoadout(callsign, loadout) {
@@ -100,18 +142,19 @@ function updateLoadout(callsign, loadout) {
   return db.users[key].loadout;
 }
 
-function recordMatchResult({ winnerTeam, players = [], mode = 'TDM' }) {
+function recordMatchResult({ winnerTeam, players = [], mode = 'TDM', scores = {} }) {
   db.matches.unshift({
     id: crypto.randomUUID(),
     mode,
     winnerTeam,
+    scores,
     players,
     endedAt: new Date().toISOString()
   });
   if (db.matches.length > 50) db.matches.length = 50;
 
   for (const p of players) {
-    const key = (p.callsign || '').toLowerCase();
+    const key = String(p.callsign || '').toLowerCase();
     const user = db.users[key];
     if (user) {
       user.stats.kills += p.kills || 0;
@@ -132,11 +175,13 @@ function getLeaderboard(limit = 20) {
 }
 
 function sanitizeUser(u) {
+  const kd = u.stats.deaths > 0 ? Number((u.stats.kills / u.stats.deaths).toFixed(2)) : u.stats.kills;
   return {
     id: u.id,
     callsign: u.callsign,
+    rank: getRankTitle(u.stats.score),
     loadout: u.loadout,
-    stats: u.stats
+    stats: { ...u.stats, kd }
   };
 }
 
@@ -149,5 +194,6 @@ module.exports = {
   recordMatchResult,
   getLeaderboard,
   sanitizeUser,
+  getUserCount: () => Object.keys(db.users).length,
   getRecentMatches: () => db.matches.slice(0, 15)
 };

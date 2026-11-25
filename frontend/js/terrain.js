@@ -155,6 +155,34 @@ function buildOpenBunker(scene, x, z, w, h, d, concreteMat, roofMat, sandbagMat)
   scene.add(g);
 }
 
+
+function buildTacticalCover(scene, concreteMat, sandbagMat) {
+  const crateMat = new THREE.MeshStandardMaterial({ color: 0x4b5336, roughness: 0.85 });
+  const spots = [
+    [-22, -16, 0.2], [22, -18, -0.3], [-20, 18, 0.1], [24, 16, -0.2],
+    [0, -32, 0], [0, 32, 0], [-36, 4, 0.8], [36, -4, -0.8],
+    [-14, -48, 0.15], [14, 48, -0.15]
+  ];
+  for (const [x, z, rot] of spots) {
+    const y = getTerrainHeight(x, z);
+    const g = new THREE.Group();
+    // L-shaped concrete firing barrier + sandbags + ammo crate
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(4.8, 1.25, 0.55), concreteMat);
+    wall.position.y = 0.62;
+    const wing = new THREE.Mesh(new THREE.BoxGeometry(0.55, 1.25, 2.2), concreteMat);
+    wing.position.set(2.15, 0.62, 0.9);
+    const crate = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.85, 0.9), crateMat);
+    crate.position.set(-1.3, 0.42, 0.85);
+    const bag = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.45, 0.65), sandbagMat);
+    bag.position.set(0.5, 1.45, 0);
+    g.add(wall, wing, crate, bag);
+    g.position.set(x, y - 0.1, z);
+    g.rotation.y = rot;
+    g.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+    scene.add(g);
+  }
+}
+
 export function buildBorderTerrain(scene, renderer) {
   createSkyDome(scene);
   const maxAniso = renderer ? Math.min(16, renderer.capabilities.getMaxAnisotropy()) : 4;
@@ -280,6 +308,7 @@ export function buildBorderTerrain(scene, renderer) {
   buildOpenBunker(scene, 0, 0, 12, 3.2, 6, concreteMat, roofMat, sandbagMat);
   buildOpenBunker(scene, -24, -72, 5, 7.2, 5, concreteMat, roofMat, sandbagMat);
   buildOpenBunker(scene, 24, 72, 5, 7.2, 5, concreteMat, roofMat, sandbagMat);
+  buildTacticalCover(scene, concreteMat, sandbagMat);
 
   // Armored Patrol Vehicles near Outposts
   buildMilitaryVehicle(scene, -16, -64, 0.3, 0x3f4a32);

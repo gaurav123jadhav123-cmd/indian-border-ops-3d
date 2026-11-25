@@ -27,6 +27,12 @@ let lastSnapshot = null;
 let slotIndex = 0;
 const slots = ['primary', 'secondary', 'launcher'];
 
+let weaponRecoil = 0;
+let reloadTilt = 0;
+let isReloading = false;
+let screenShake = 0;
+let respawnTimer = null;
+
 const canvas = document.getElementById('game-canvas');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -64,22 +70,29 @@ const remotePlayers = new Map();
 const airdropMeshes = new Map();
 const droneMeshes = new Map();
 const grenadeMeshes = new Map();
+const rocketMeshes = new Map();
 const missileMeshes = new Map();
 const fxList = [];
+const bullets = [];
 
 function fireWeaponOrDrone() {
-  if (!socket || !localPlayerId) return;
+  if (!socket || !localPlayerId || isReloading) return;
   if (activeDroneId) {
     socket.emit('control_drone', { detonate: true });
     return;
   }
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
-  socket.emit('shoot', {
-    origin: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
-    dir: { x: dir.x, y: dir.y, z: dir.z }
-  });
+  const origin = { x: camera.position.x, y: camera.position.y, z: camera.position.z };
+
+  socket.emit('shoot', { origin, dir: { x: dir.x, y: dir.y, z: dir.z } });
   playSound('rifle');
+
+  // Local firing animation: kickback, muzzle flash, bullet projectile
+  weaponRecoil = 0.09;
+  screenShake = 0.025;
+  spawnBulletProjectile(origin, dir);
+
   if (currentViewModel) {
     const flash = currentViewModel.getObjectByName('muzzleFlash');
     const light = currentViewModel.getObjectByName('muzzleLight');
@@ -101,7 +114,7 @@ const mobileControls = new MobileControls({
   onJump: () => controller.triggerJump(),
   onCrouch: () => controller.toggleCrouch(),
   onProne: () => controller.toggleProne(),
-  onReload: () => { if (socket) { socket.emit('reload'); showAlert('Reloading...'); } },
+  onReload: () => { if (socket) socket.emit('reload'); },
   onToggleCam: () => { controller.thirdPerson = !controller.thirdPerson; },
   onSwapWeapon: () => {
     if (!socket) return;
@@ -176,26 +189,93 @@ function showAlert(msg) {
   el.textContent = msg;
   el.classList.remove('hidden');
   clearTimeout(el._timer);
-  el._timer = setTimeout(() => el.classList.add('hidden'), 2800);
+  el._timer = setTimeout(() => el.classList.add('hidden'), 2600);
+}
+
+function showFloatingDamage(damage, headshot, worldPos) {
+  const container = document.getElementById('damage-numbers');
+  if (!container || !worldPos) return;
+  const v = new THREE.Vector3(worldPos.x, worldPos.y, worldPos.z);
+  v.project(camera);
+  if (v.z > 1) return;
+
+  const x = (v.x * 0.5 + 0.5) * window.innerWidth;
+  const y = (-v.y * 0.5 + 0.5) * window.innerHeight;
+  const el = document.createElement('div');
+  el.className = headshot ? 'dmg-float headshot' : 'dmg-float';
+  el.style.left = `${x}px`;
+  el.style.top = `${y}px`;
+  el.textContent = headshot ? `-${damage} HS!` : `-${damage}`;
+  container.appendChild(el);
+  setTimeout(() => el.remove(), 800);
+}
+
+function spawnBulletProjectile(origin, dir) {
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(0.05, 0.05, 0.9),
+    new THREE.MeshBasicMaterial({ color: 0xfef08a })
+  );
+  mesh.position.set(origin.x, origin.y - 0.05, origin.z);
+  mesh.lookAt(origin.x + dir.x * 10, origin.y + dir.y * 10, origin.z + dir.z * 10);
+  scene.add(mesh);
+  bullets.push({
+    mesh,
+    vx: dir.x * 140,
+    vy: dir.y * 140,
+    vz: dir.z * 140,
+    life: 0.45
+  });
 }
 
 function spawnExplosionFx(x, y, z, radius = 8) {
   playSound('explosion');
-  const sphere = new THREE.Mesh(
-    new THREE.SphereGeometry(radius * 0.45, 14, 14),
-    new THREE.MeshBasicMaterial({ color: 0xff6b00, transparent: true, opacity: 0.9 })
-  );
-  sphere.position.set(x, y + 0.5, z);
-  scene.add(sphere);
-  fxList.push({ mesh: sphere, life: 0.45, maxLife: 0.45 });
-}
+  screenShake = Math.max(screenShake, 0.16);
 
-function spawnTracer(origin, dir) {
-  const end = new THREE.Vector3(origin.x + dir.x * 65, origin.y + dir.y * 65, origin.z + dir.z * 65);
-  const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(origin.x, origin.y, origin.z), end]);
-  const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xfef08a, transparent: true, opacity: 0.85 }));
-  scene.add(line);
-  fxList.push({ mesh: line, life: 0.08, maxLife: 0.08 });
+  // 1. Fireball Core
+  const fireball = new THREE.Mesh(
+    new THREE.SphereGeometry(radius * 0.42, 16, 16),
+    new THREE.MeshBasicMaterial({ color: 0xff5500, transparent: true, opacity: 0.95 })
+  );
+  fireball.position.set(x, y + 0.6, z);
+  scene.add(fireball);
+  fxList.push({ mesh: fireball, life: 0.5, maxLife: 0.5, grow: 1.8 });
+
+  // 2. Shockwave Ring
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.6, 1.4, 24),
+    new THREE.MeshBasicMaterial({ color: 0xffd166, side: THREE.DoubleSide, transparent: true, opacity: 0.85 })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.set(x, y + 0.2, z);
+  scene.add(ring);
+  fxList.push({ mesh: ring, life: 0.45, maxLife: 0.45, grow: 7.5 });
+
+  // 3. Rising Smoke Plume
+  const smoke = new THREE.Mesh(
+    new THREE.SphereGeometry(radius * 0.35, 10, 10),
+    new THREE.MeshStandardMaterial({ color: 0x2a2d30, transparent: true, opacity: 0.78 })
+  );
+  smoke.position.set(x, y + 1.4, z);
+  scene.add(smoke);
+  fxList.push({ mesh: smoke, life: 2.2, maxLife: 2.2, grow: 1.5, rise: 3.0 });
+
+  // 4. Flying Embers / Sparks
+  for (let i = 0; i < 12; i++) {
+    const spark = new THREE.Mesh(
+      new THREE.BoxGeometry(0.18, 0.18, 0.18),
+      new THREE.MeshBasicMaterial({ color: 0xffaa00, transparent: true, opacity: 1 })
+    );
+    spark.position.set(x, y + 0.5, z);
+    scene.add(spark);
+    fxList.push({
+      mesh: spark,
+      life: 0.7,
+      maxLife: 0.7,
+      vx: (Math.random() - 0.5) * 18,
+      vy: 6 + Math.random() * 12,
+      vz: (Math.random() - 0.5) * 18
+    });
+  }
 }
 
 async function initLobby() {
@@ -220,7 +300,7 @@ async function initLobby() {
 
     const lb = await fetchLeaderboard();
     leaderboardList.innerHTML = lb.leaderboard.length
-      ? lb.leaderboard.map((u, i) => `<div class="lb-row"><span>#${i + 1} ${u.callsign}</span><span>${u.stats.kills} K / ${u.stats.score} PTS</span></div>`).join('')
+      ? lb.leaderboard.map((u, i) => `<div class="lb-row"><span>#${i + 1} [${u.rank || "Sepoy"}] ${u.callsign}</span><span>${u.stats.kills} K / ${u.stats.score} PTS</span></div>`).join('')
       : '<div class="lb-row">No matches recorded yet. Deploy to set the first score!</div>';
   } catch (err) {
     lobbyStatus.textContent = 'Backend waking up — refresh in a few seconds.';
@@ -239,9 +319,21 @@ deployBtn.addEventListener('click', async () => {
     launcher: launcherSelect.value || 'carlGustaf'
   };
 
+  // Request Fullscreen + Landscape Orientation on Mobile
+  if (mobileControls.enabled) {
+    try {
+      if (document.documentElement.requestFullscreen) {
+        await document.documentElement.requestFullscreen();
+      }
+      if (screen.orientation && screen.orientation.lock) {
+        await screen.orientation.lock('landscape');
+      }
+    } catch (_) {}
+  }
+
   try {
     deployBtn.disabled = true;
-    lobbyStatus.textContent = 'Authenticating & waking up 5v5 Game Server (may take ~30s)...';
+    lobbyStatus.textContent = 'Connecting to 5v5 Game Server...';
     const auth = await loginPlayer(callsign, password);
     authToken = auth.token;
     await savePlayerLoadout(authToken, loadout);
@@ -253,6 +345,13 @@ deployBtn.addEventListener('click', async () => {
     lobbyStatus.textContent = err.message;
   }
 });
+
+function checkOrientationHint() {
+  const hint = document.getElementById('rotate-hint');
+  if (!hint || !mobileControls.enabled) return;
+  if (window.innerHeight > window.innerWidth) hint.classList.remove('hidden');
+  else hint.classList.add('hidden');
+}
 
 function bindSocketEvents(joinPayload) {
   socket.on('connect', () => {
@@ -277,12 +376,10 @@ function bindSocketEvents(joinPayload) {
     lobbyScreen.classList.add('hidden');
     hud.classList.remove('hidden');
     deployBtn.disabled = false;
+    checkOrientationHint();
 
-    if (mobileControls.enabled) {
-      mobileControls.show();
-    } else {
-      canvas.requestPointerLock();
-    }
+    if (mobileControls.enabled) mobileControls.show();
+    else canvas.requestPointerLock();
   });
 
   socket.on('state_snapshot', (snap) => {
@@ -290,18 +387,62 @@ function bindSocketEvents(joinPayload) {
     syncWorldState(snap);
     updateHud(snap);
     drawMinimap(snap);
+    if (snap.weather === 'blizzard_fog') {
+      scene.fog.density = 0.0085;
+      if (snowParticles) snowParticles.visible = true;
+    } else if (snap.weather === 'clear') {
+      scene.fog.density = 0.0028;
+      if (snowParticles) snowParticles.visible = false;
+    } else {
+      scene.fog.density = 0.0045;
+      if (snowParticles) snowParticles.visible = true;
+    }
   });
 
   socket.on('shot_fired', ({ shooterId, origin, dir }) => {
-    if (shooterId !== localPlayerId) spawnTracer(origin, dir);
+    if (shooterId !== localPlayerId) {
+      spawnBulletProjectile(origin, dir);
+    }
   });
 
-  socket.on('hit_confirm', () => {
+  socket.on('reloading', () => {
+    isReloading = true;
+    document.getElementById('reload-status').textContent = 'RELOADING...';
+  });
+
+  socket.on('reloaded', () => {
+    isReloading = false;
+    document.getElementById('reload-status').textContent = '[1] Primary • [2] Sidearm • [3] Bazooka';
+  });
+
+  socket.on('hit_confirm', ({ damage, headshot, targetPos }) => {
     const hm = document.getElementById('hitmarker');
     hm.classList.remove('hidden');
-    setTimeout(() => hm.classList.add('hidden'), 120);
+    setTimeout(() => hm.classList.add('hidden'), 130);
+    showFloatingDamage(damage, headshot, targetPos);
   });
 
+  socket.on('took_damage', () => {
+    const vig = document.getElementById('damage-vignette');
+    vig.style.opacity = '1';
+    screenShake = Math.max(screenShake, 0.08);
+    setTimeout(() => { vig.style.opacity = '0'; }, 240);
+  });
+
+  socket.on('player_killed', ({ respawnSec }) => {
+    let left = respawnSec || 5;
+    const secEl = document.getElementById('respawn-sec');
+    secEl.textContent = left;
+    document.getElementById('respawn-overlay').classList.remove('hidden');
+    clearInterval(respawnTimer);
+    respawnTimer = setInterval(() => {
+      left = Math.max(0, left - 1);
+      secEl.textContent = left;
+      if (left <= 0) clearInterval(respawnTimer);
+    }, 1000);
+  });
+
+  socket.on('killstreak_unlocked', ({ streak, reward }) => showAlert(`${streak} KILLSTREAK: ${reward}!`));
   socket.on('heal_applied', ({ itemKey }) => showAlert(`Used ${itemKey}`));
   socket.on('explosion', ({ x, y, z, radius }) => spawnExplosionFx(x, y, z, radius));
 
@@ -343,6 +484,8 @@ function bindSocketEvents(joinPayload) {
     controller.y = pos.y;
     controller.z = pos.z;
     activeDroneId = null;
+    isReloading = false;
+    clearInterval(respawnTimer);
     document.getElementById('respawn-overlay').classList.add('hidden');
     document.getElementById('drone-overlay').classList.add('hidden');
     mobileControls.setDroneMode(false);
@@ -360,12 +503,9 @@ function drawMinimap(snap) {
   const w = minimapCanvas.width;
   const h = minimapCanvas.height;
   minimapCtx.clearRect(0, 0, w, h);
-
-  // Background
   minimapCtx.fillStyle = 'rgba(10, 18, 28, 0.82)';
   minimapCtx.fillRect(0, 0, w, h);
 
-  // LAC River line across middle
   minimapCtx.strokeStyle = 'rgba(90, 170, 212, 0.55)';
   minimapCtx.lineWidth = 3;
   minimapCtx.beginPath();
@@ -375,13 +515,11 @@ function drawMinimap(snap) {
 
   const toMap = (val) => ((val + 140) / 280) * w;
 
-  // Airdrops
   for (const c of snap.airdrops) {
     minimapCtx.fillStyle = '#f59e0b';
     minimapCtx.fillRect(toMap(c.x) - 3, toMap(c.z) - 3, 6, 6);
   }
 
-  // Players & Bots
   const me = snap.players.find((p) => p.id === localPlayerId);
   for (const p of snap.players) {
     if (!p.alive) continue;
@@ -412,9 +550,7 @@ function syncWorldState(snap) {
       scene.add(mesh);
       remotePlayers.set(p.id, mesh);
     }
-    const prevX = mesh.position.x;
-    const prevZ = mesh.position.z;
-    const moved = Math.hypot(p.x - prevX, p.z - prevZ) > 0.02;
+    const moved = Math.hypot(p.x - mesh.position.x, p.z - mesh.position.z) > 0.02;
     mesh.visible = p.alive;
     mesh.position.set(p.x, p.y, p.z);
     mesh.rotation.y = p.yaw;
@@ -483,11 +619,12 @@ function syncWorldState(snap) {
     }
   }
 
-  syncProjectiles(snap.grenades, grenadeMeshes, 0x16a34a, 0.18);
-  syncProjectiles(snap.missiles, missileMeshes, 0xfacc15, 0.5);
+  syncProjectiles(snap.grenades, grenadeMeshes, 0x16a34a, 0.2, true);
+  syncProjectiles(snap.rockets || [], rocketMeshes, 0xff6b00, 0.24, false);
+  syncProjectiles(snap.missiles, missileMeshes, 0xfacc15, 0.52, false);
 }
 
-function syncProjectiles(list, map, color, size) {
+function syncProjectiles(list, map, color, size, spin) {
   const seen = new Set();
   for (const item of list) {
     seen.add(item.id);
@@ -498,6 +635,7 @@ function syncProjectiles(list, map, color, size) {
       map.set(item.id, m);
     }
     m.position.set(item.x, item.y, item.z);
+    if (spin) m.rotation.x += 0.35;
   }
   for (const [id, m] of map.entries()) {
     if (!seen.has(id)) {
@@ -537,10 +675,6 @@ function updateHud(snap) {
   document.getElementById('gear-missile').innerHTML = `[4] Missile: <b>${me.inventory.missileReady ? 'RDY' : 'CD'}</b>`;
   document.getElementById('gear-fpv').innerHTML = `[5] FPV: <b>${me.inventory.fpvDroneReady ? 'RDY' : 'CD'}</b>`;
   document.getElementById('gear-recon').innerHTML = `[6] Recon: <b>${me.inventory.reconDroneReady ? 'RDY' : 'CD'}</b>`;
-
-  const respawnOverlay = document.getElementById('respawn-overlay');
-  if (!me.alive) respawnOverlay.classList.remove('hidden');
-  else respawnOverlay.classList.add('hidden');
 
   const nearDrop = snap.airdrops.find((c) => c.landed && Math.hypot(c.x - me.x, c.z - me.z) < 5);
   const promptEl = document.getElementById('airdrop-prompt');
@@ -636,7 +770,16 @@ function animate(now) {
       const moveState = controller.update(dt, me?.boost || 0, mult, false);
       socket.emit('player_move', moveState);
 
-      if (currentViewModel) currentViewModel.visible = !controller.thirdPerson;
+      if (currentViewModel) {
+        currentViewModel.visible = !controller.thirdPerson;
+        // Weapon firing recoil + reload tilt animation
+        weaponRecoil *= 0.8;
+        const targetTilt = isReloading ? -0.55 : 0;
+        reloadTilt += (targetTilt - reloadTilt) * 0.2;
+        currentViewModel.position.set(controller.ads ? 0 : 0.24, -0.22 + reloadTilt * 0.15, -0.45 + weaponRecoil);
+        currentViewModel.rotation.x = weaponRecoil * 1.4 + reloadTilt;
+      }
+
       if (localThirdPersonMesh) {
         localThirdPersonMesh.visible = controller.thirdPerson;
         localThirdPersonMesh.position.set(controller.x, controller.y, controller.z);
@@ -645,9 +788,38 @@ function animate(now) {
     }
   }
 
+  // Camera shake decay
+  if (screenShake > 0.002) {
+    camera.position.x += (Math.random() - 0.5) * screenShake;
+    camera.position.y += (Math.random() - 0.5) * screenShake;
+    screenShake *= 0.82;
+  }
+
+  // Flying bullet projectiles
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    b.life -= dt;
+    b.mesh.position.x += b.vx * dt;
+    b.mesh.position.y += b.vy * dt;
+    b.mesh.position.z += b.vz * dt;
+    if (b.life <= 0) {
+      scene.remove(b.mesh);
+      bullets.splice(i, 1);
+    }
+  }
+
+  // Multi-stage explosions & smoke FX
   for (let i = fxList.length - 1; i >= 0; i--) {
     const fx = fxList[i];
     fx.life -= dt;
+    if (fx.grow) fx.mesh.scale.addScalar(fx.grow * dt * 4);
+    if (fx.rise) fx.mesh.position.y += fx.rise * dt;
+    if (fx.vx !== undefined) {
+      fx.mesh.position.x += fx.vx * dt;
+      fx.mesh.position.y += fx.vy * dt;
+      fx.mesh.position.z += fx.vz * dt;
+      fx.vy -= 22 * dt;
+    }
     if (fx.mesh.material.opacity !== undefined) {
       fx.mesh.material.opacity = Math.max(0, fx.life / fx.maxLife);
     }
@@ -669,6 +841,7 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  checkOrientationHint();
 });
 
 initLobby();

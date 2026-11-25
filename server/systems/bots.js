@@ -1,5 +1,5 @@
-const { getTerrainHeight, MAP_HALF_SIZE } = require('./terrainHeight');
-const { WEAPON_STATS, applyDamage } = require('./ballistics');
+const { getTerrainHeight, MAP_HALF_SIZE, raycastWorldOcclusion } = require('./terrainHeight');
+const { WEAPON_STATS, computeDistanceDamage, applyDamage } = require('./ballistics');
 
 const BOT_WEAPONS = ['sig716', 'ak203', 'insas', 'tavor', 'asmi', 'svd'];
 const BHARAT_NAMES = ['BOT_Arjun', 'BOT_Vikram', 'BOT_Karan', 'BOT_Rohan', 'BOT_Kabir'];
@@ -70,13 +70,26 @@ class BotManager {
       ammo: { primary: WEAPON_STATS[primary].magSize, secondary: 13, launcher: 1 },
       inventory: { frag: 1, smoke: 1, bandage: 2, firstAid: 1, medkit: 0, energyDrink: 1 },
       lastShotAt: 0,
+      reloadingUntil: 0,
       aiTargetId: null,
       aiWayX: (Math.random() - 0.5) * 65,
       aiWayZ: (Math.random() - 0.5) * 35,
-      aiNextThinkAt: 0
+      aiNextThinkAt: 0,
+      lastHealAt: 0
     };
 
     this.room.players.set(id, bot);
+  }
+
+  hasLineOfSight(bot, target) {
+    const origin = { x: bot.x, y: bot.y + 1.5, z: bot.z };
+    const dx = target.x - bot.x;
+    const dy = (target.y + 1.2) - origin.y;
+    const dz = target.z - bot.z;
+    const dist = Math.hypot(dx, dy, dz) || 1;
+    const dir = { x: dx / dist, y: dy / dist, z: dz / dist };
+    const hit = raycastWorldOcclusion(origin, dir, dist);
+    return hit === null || hit >= dist - 0.8;
   }
 
   update(now) {
@@ -85,16 +98,23 @@ class BotManager {
     for (const bot of allPlayers) {
       if (!bot.isBot || !bot.alive) continue;
 
+      // Self-heal when wounded
+      if (bot.hp < 45 && bot.inventory.firstAid > 0 && now - bot.lastHealAt > 6000) {
+        bot.inventory.firstAid -= 1;
+        bot.hp = Math.min(75, bot.hp + 55);
+        bot.lastHealAt = now;
+      }
+
       if (now >= bot.aiNextThinkAt) {
-        bot.aiNextThinkAt = now + 260 + Math.random() * 180;
+        bot.aiNextThinkAt = now + 280 + Math.random() * 180;
         let nearest = null;
-        let bestDist = 85;
+        let bestDist = 90;
 
         for (const other of allPlayers) {
           if (other.id === bot.id || !other.alive) continue;
           if (this.room.mode === 'TDM' && other.team === bot.team) continue;
           const d = Math.hypot(other.x - bot.x, other.z - bot.z);
-          if (d < bestDist) {
+          if (d < bestDist && this.hasLineOfSight(bot, other)) {
             bestDist = d;
             nearest = other;
           }
@@ -115,17 +135,28 @@ class BotManager {
         const dist = Math.hypot(dx, dz) || 1;
         bot.yaw = Math.atan2(-dx, -dz);
 
-        if (dist > 16) {
+        // Tactical strafe / retreat when low HP
+        if (bot.hp < 35) {
+          bot.x -= (dx / dist) * 0.22;
+          bot.z -= (dz / dist) * 0.22;
+          bot.stance = 'crouch';
+        } else if (dist > 18) {
           bot.x += (dx / dist) * 0.22;
           bot.z += (dz / dist) * 0.22;
         } else {
-          bot.x += (-dz / dist) * 0.09;
-          bot.z += (dx / dist) * 0.09;
+          bot.x += (-dz / dist) * 0.10;
+          bot.z += (dx / dist) * 0.10;
         }
 
         const stats = WEAPON_STATS[bot.loadout.primary] || WEAPON_STATS.sig716;
-        if (now - bot.lastShotAt >= Math.max(460, stats.fireRateMs * 3.5)) {
+        if (now >= bot.reloadingUntil && now - bot.lastShotAt >= Math.max(440, stats.fireRateMs * 3.2)) {
           bot.lastShotAt = now;
+          bot.ammo.primary -= 1;
+          if (bot.ammo.primary <= 0) {
+            bot.reloadingUntil = now + stats.reloadMs;
+            bot.ammo.primary = stats.magSize;
+          }
+
           this.room.io.to(this.room.roomId).emit('shot_fired', {
             shooterId: bot.id,
             weaponId: bot.loadout.primary,
@@ -133,11 +164,14 @@ class BotManager {
             dir: { x: dx / dist, y: (target.y - bot.y) / dist, z: dz / dist }
           });
 
-          const hitChance = Math.max(0.18, 0.54 - dist * 0.0045);
+          const hitChance = Math.max(0.16, 0.54 - dist * 0.0045);
           if (Math.random() < hitChance) {
             const headshot = Math.random() < 0.12;
-            const dmg = Math.round(stats.damage * (headshot ? 1.45 : 0.72));
-            applyDamage(target, dmg);
+            const dmg = computeDistanceDamage(stats, dist, headshot);
+            const dealt = applyDamage(target, Math.round(dmg * 0.72));
+            if (!target.isBot) {
+              this.room.io.to(target.id).emit('took_damage', { amount: dealt });
+            }
             if (target.hp <= 0) {
               this.room.registerKill(bot, target, stats.name, headshot);
             }

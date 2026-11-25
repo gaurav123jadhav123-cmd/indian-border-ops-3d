@@ -1,5 +1,6 @@
-const { getTerrainHeight, MAP_HALF_SIZE } = require('../systems/terrainHeight');
-const { WEAPON_STATS, traceShot, applyDamage } = require('../systems/ballistics');
+const { getTerrainHeight, MAP_HALF_SIZE, raycastWorldOcclusion } = require('../systems/terrainHeight');
+const { WEAPON_STATS, traceShot, computeDistanceDamage, applyDamage } = require('../systems/ballistics');
+const { validateAndClampMove, validateShotPayload } = require('../systems/antiCheat');
 const { AirdropManager } = require('../systems/airdrop');
 const { DroneManager } = require('../systems/drones');
 const { BotManager } = require('../systems/bots');
@@ -13,6 +14,8 @@ const HEAL_ITEMS = {
   energyDrink: { heal: 0, cap: 100, boost: 40, castMs: 2200 }
 };
 
+const WEATHER_STATES = ['clear', 'snowfall', 'blizzard_fog'];
+
 class MatchRoom {
   constructor(roomId, mode = 'TDM', io, onMatchEnd) {
     this.roomId = roomId;
@@ -24,14 +27,18 @@ class MatchRoom {
     this.drones = new DroneManager();
     this.bots = new BotManager(this);
     this.grenades = [];
+    this.rockets = [];
     this.missiles = [];
     this.scores = { bharat: 0, opfor: 0 };
     this.scoreLimit = 40;
     this.matchEndAt = Date.now() + 8 * 60 * 1000;
     this.ended = false;
+    this.weather = 'snowfall';
+    this.nextWeatherAt = Date.now() + 90000;
     this.seq = 1;
+    this.avgTickMs = 0;
 
-    this.tickInterval = setInterval(() => this.tick(), 50); // Smooth 20Hz authoritative tick
+    this.tickInterval = setInterval(() => this.tick(), 50); // 20Hz authoritative tick
   }
 
   addPlayer(socket, { callsign, loadout, team }) {
@@ -44,10 +51,14 @@ class MatchRoom {
     }
 
     const spawn = this.getSpawnPoint(assignedTeam, false);
+    const primary = (loadout && WEAPON_STATS[loadout.primary]) ? loadout.primary : 'sig716';
+    const secondary = (loadout && WEAPON_STATS[loadout.secondary]) ? loadout.secondary : 'pistol9mm';
+    const launcher = (loadout && WEAPON_STATS[loadout.launcher]) ? loadout.launcher : 'carlGustaf';
+
     const player = {
       id: socket.id,
       isBot: false,
-      callsign: callsign || `Soldier_${socket.id.slice(0, 4)}`,
+      callsign: String(callsign || `Soldier_${socket.id.slice(0, 4)}`).slice(0, 20),
       team: assignedTeam,
       mode: this.mode,
       x: spawn.x,
@@ -67,16 +78,13 @@ class MatchRoom {
       deaths: 0,
       streak: 0,
       activeSlot: 'primary',
-      loadout: {
-        primary: (loadout && loadout.primary) || 'sig716',
-        secondary: (loadout && loadout.secondary) || 'pistol9mm',
-        launcher: (loadout && loadout.launcher) || 'carlGustaf'
-      },
+      loadout: { primary, secondary, launcher },
       ammo: {
-        primary: (WEAPON_STATS[(loadout && loadout.primary) || 'sig716'] || WEAPON_STATS.sig716).magSize,
-        secondary: WEAPON_STATS.pistol9mm.magSize,
-        launcher: 1
+        primary: WEAPON_STATS[primary].magSize,
+        secondary: WEAPON_STATS[secondary].magSize,
+        launcher: WEAPON_STATS[launcher].magSize
       },
+      reloadingUntil: 0,
       inventory: {
         frag: 2,
         smoke: 2,
@@ -89,6 +97,7 @@ class MatchRoom {
         reconDroneReady: true
       },
       lastShotAt: 0,
+      lastMoveAt: Date.now(),
       activeDroneId: null
     };
 
@@ -110,7 +119,7 @@ class MatchRoom {
   }
 
   getSpawnPoint(team, isBot = false) {
-    const baseZ = isBot ? (team === 'bharat' ? -48 : 48) : (team === 'bharat' ? -68 : 68);
+    const baseZ = isBot ? (team === 'bharat' ? -45 : 45) : (team === 'bharat' ? -64 : 64);
     const x = (Math.random() - 0.5) * 44;
     const z = baseZ + (Math.random() - 0.5) * 16;
     return { x, y: getTerrainHeight(x, z), z };
@@ -119,17 +128,20 @@ class MatchRoom {
   handleMove(socketId, state) {
     const p = this.players.get(socketId);
     if (!p || !p.alive) return;
+    const now = Date.now();
+    const dt = (now - p.lastMoveAt) / 1000;
+    const clamped = validateAndClampMove(p, state, dt);
+    if (!clamped) return;
 
-    const clampedX = Math.max(-MAP_HALF_SIZE, Math.min(MAP_HALF_SIZE, state.x));
-    const clampedZ = Math.max(-MAP_HALF_SIZE, Math.min(MAP_HALF_SIZE, state.z));
-    p.x = clampedX;
-    p.z = clampedZ;
-    p.y = typeof state.y === 'number' ? state.y : getTerrainHeight(clampedX, clampedZ);
-    p.yaw = state.yaw || 0;
-    p.pitch = state.pitch || 0;
-    p.stance = state.stance || 'stand';
-    p.lean = state.lean || 0;
-    p.sprinting = !!state.sprinting;
+    p.x = clamped.x;
+    p.y = clamped.y;
+    p.z = clamped.z;
+    p.yaw = clamped.yaw;
+    p.pitch = clamped.pitch;
+    p.stance = clamped.stance;
+    p.lean = clamped.lean;
+    p.sprinting = clamped.sprinting;
+    p.lastMoveAt = now;
   }
 
   handleSwitchWeapon(socketId, slot) {
@@ -137,41 +149,76 @@ class MatchRoom {
     if (!p || !p.alive) return;
     if (['primary', 'secondary', 'launcher'].includes(slot)) {
       p.activeSlot = slot;
+      p.reloadingUntil = 0;
     }
+  }
+
+  startReload(p) {
+    const now = Date.now();
+    if (p.reloadingUntil > now) return;
+    const slot = p.activeSlot;
+    const weaponId = p.loadout[slot];
+    const stats = WEAPON_STATS[weaponId] || WEAPON_STATS.sig716;
+    const reloadMs = stats.reloadMs || 1800;
+    p.reloadingUntil = now + reloadMs;
+    if (!p.isBot) {
+      this.io.to(p.id).emit('reloading', { slot, reloadMs });
+    }
+    setTimeout(() => {
+      if (!this.players.has(p.id)) return;
+      p.ammo[slot] = stats.magSize;
+      p.reloadingUntil = 0;
+      if (!p.isBot) {
+        this.io.to(p.id).emit('reloaded', { slot, ammo: p.ammo[slot] });
+      }
+    }, reloadMs);
   }
 
   handleReload(socketId) {
     const p = this.players.get(socketId);
     if (!p || !p.alive) return;
-    const weaponId = p.loadout[p.activeSlot];
-    const stats = WEAPON_STATS[weaponId] || WEAPON_STATS.sig716;
-    p.ammo[p.activeSlot] = stats.magSize;
-    this.io.to(socketId).emit('reloaded', { slot: p.activeSlot, ammo: p.ammo[p.activeSlot] });
+    this.startReload(p);
   }
 
-  handleShoot(socketId, { origin, dir }) {
+  handleShoot(socketId, data) {
     const p = this.players.get(socketId);
-    if (!p || !p.alive) return;
+    if (!p || !p.alive || !validateShotPayload(data)) return;
     const now = Date.now();
+    if (p.reloadingUntil > now) return;
+
+    const { origin, dir } = data;
     const weaponId = p.loadout[p.activeSlot] || 'sig716';
     const stats = WEAPON_STATS[weaponId] || WEAPON_STATS.sig716;
 
     if (now - p.lastShotAt < stats.fireRateMs * 0.75) return;
-    if (p.ammo[p.activeSlot] <= 0) return;
+    if (p.ammo[p.activeSlot] <= 0) {
+      this.startReload(p);
+      return;
+    }
 
     p.lastShotAt = now;
     p.ammo[p.activeSlot] -= 1;
+    if (p.ammo[p.activeSlot] <= 0) {
+      this.startReload(p);
+    }
 
     if (weaponId === 'carlGustaf') {
       const len = Math.hypot(dir.x, dir.y, dir.z) || 1;
       const ndir = { x: dir.x / len, y: dir.y / len, z: dir.z / len };
-      const impact = {
-        x: origin.x + ndir.x * 45,
-        y: getTerrainHeight(origin.x + ndir.x * 45, origin.z + ndir.z * 45),
-        z: origin.z + ndir.z * 45
+      const speed = 52;
+      const rocket = {
+        id: `rocket_${this.seq++}`,
+        ownerId: p.id,
+        x: origin.x + ndir.x * 1.1,
+        y: origin.y + ndir.y * 1.1,
+        z: origin.z + ndir.z * 1.1,
+        vx: ndir.x * speed,
+        vy: ndir.y * speed,
+        vz: ndir.z * speed,
+        ttl: Date.now() + 5000
       };
-      this.explodeAt(impact.x, impact.y, impact.z, stats.blastRadius, stats.damage, p, stats.name);
-      this.io.to(this.roomId).emit('explosion', { ...impact, radius: stats.blastRadius, kind: 'rocket' });
+      this.rockets.push(rocket);
+      this.io.to(this.roomId).emit('rocket_launched', rocket);
       return;
     }
 
@@ -179,16 +226,19 @@ class MatchRoom {
     this.io.to(this.roomId).emit('shot_fired', { shooterId: p.id, weaponId, origin, dir });
 
     if (closestHit) {
-      const dmg = Math.round(stats.damage * (closestHit.headshot ? stats.headshotMult : 1));
+      const dmg = computeDistanceDamage(stats, closestHit.dist, closestHit.headshot);
       const dealt = applyDamage(closestHit.target, dmg);
       if (!p.isBot) {
         this.io.to(p.id).emit('hit_confirm', {
           targetId: closestHit.target.id,
           damage: dealt,
-          headshot: closestHit.headshot
+          headshot: closestHit.headshot,
+          targetPos: { x: closestHit.target.x, y: closestHit.target.y + 1.7, z: closestHit.target.z }
         });
       }
-
+      if (!closestHit.target.isBot) {
+        this.io.to(closestHit.target.id).emit('took_damage', { amount: dealt });
+      }
       if (closestHit.target.hp <= 0) {
         this.registerKill(p, closestHit.target, stats.name, closestHit.headshot);
       }
@@ -198,10 +248,11 @@ class MatchRoom {
   handleThrowGrenade(socketId, { type, origin, dir }) {
     const p = this.players.get(socketId);
     if (!p || !p.alive || !p.inventory[type]) return;
+    if (!validateShotPayload({ origin, dir })) return;
 
     p.inventory[type] -= 1;
     const len = Math.hypot(dir.x, dir.y, dir.z) || 1;
-    const speed = 22;
+    const speed = 23;
     const grenade = {
       id: `nade_${this.seq++}`,
       ownerId: p.id,
@@ -210,7 +261,7 @@ class MatchRoom {
       y: origin.y,
       z: origin.z,
       vx: (dir.x / len) * speed,
-      vy: (dir.y / len) * speed + 5.5,
+      vy: (dir.y / len) * speed + 6.0,
       vz: (dir.z / len) * speed,
       detonateAt: Date.now() + 2400
     };
@@ -221,27 +272,18 @@ class MatchRoom {
   handleCallMissile(socketId, { targetX, targetZ }) {
     const p = this.players.get(socketId);
     if (!p || !p.alive || !p.inventory.missileReady) return;
+    const tx = Math.max(-MAP_HALF_SIZE, Math.min(MAP_HALF_SIZE, Number(targetX) || 0));
+    const tz = Math.max(-MAP_HALF_SIZE, Math.min(MAP_HALF_SIZE, Number(targetZ) || 0));
+
     p.inventory.missileReady = false;
     setTimeout(() => {
       if (this.players.has(p.id)) p.inventory.missileReady = true;
     }, 45000);
 
-    const groundY = getTerrainHeight(targetX, targetZ);
-    const missile = {
-      id: `missile_${this.seq++}`,
-      ownerId: p.id,
-      x: targetX,
-      y: groundY + 95,
-      z: targetZ,
-      targetY: groundY
-    };
+    const groundY = getTerrainHeight(tx, tz);
+    const missile = { id: `missile_${this.seq++}`, ownerId: p.id, x: tx, y: groundY + 95, z: tz, targetY: groundY };
     this.missiles.push(missile);
-    this.io.to(this.roomId).emit('missile_incoming', {
-      id: missile.id,
-      x: targetX,
-      z: targetZ,
-      caller: p.callsign
-    });
+    this.io.to(this.roomId).emit('missile_incoming', { id: missile.id, x: tx, z: tz, caller: p.callsign });
   }
 
   handleDeployDrone(socketId, mode) {
@@ -261,7 +303,7 @@ class MatchRoom {
 
   handleControlDrone(socketId, input) {
     const p = this.players.get(socketId);
-    if (!p || !p.activeDroneId) return;
+    if (!p || !p.activeDroneId || !input) return;
     if (input.exit) {
       p.activeDroneId = null;
       return;
@@ -291,11 +333,7 @@ class MatchRoom {
     if (!p || !p.alive) return;
     const crate = this.airdrops.tryLoot(p, crateId);
     if (crate) {
-      this.io.to(this.roomId).emit('airdrop_looted', {
-        crateId: crate.id,
-        callsign: p.callsign,
-        label: crate.label
-      });
+      this.io.to(this.roomId).emit('airdrop_looted', { crateId: crate.id, callsign: p.callsign, label: crate.label });
     }
   }
 
@@ -307,6 +345,15 @@ class MatchRoom {
       if (dist <= radius) {
         const dmg = Math.round(maxDamage * (1 - dist / (radius + 1.5)));
         applyDamage(target, dmg, true);
+        if (!target.isBot) this.io.to(target.id).emit('took_damage', { amount: dmg });
+        if (owner && !owner.isBot) {
+          this.io.to(owner.id).emit('hit_confirm', {
+            targetId: target.id,
+            damage: dmg,
+            headshot: false,
+            targetPos: { x: target.x, y: target.y + 1.7, z: target.z }
+          });
+        }
         if (target.hp <= 0 && owner) {
           this.registerKill(owner, target, weaponName, false);
         }
@@ -319,13 +366,30 @@ class MatchRoom {
     victim.alive = false;
     victim.deaths += 1;
     victim.streak = 0;
-    victim.respawnAt = Date.now() + 4500;
+    victim.respawnAt = Date.now() + 5000;
     victim.activeDroneId = null;
+
+    if (!victim.isBot) {
+      this.io.to(victim.id).emit('player_killed', { respawnSec: 5, killer: killer.callsign });
+    }
 
     if (killer.id !== victim.id) {
       killer.kills += 1;
       killer.streak += 1;
       if (this.mode === 'TDM') this.scores[killer.team] += 1;
+
+      // COD-style Killstreak Rewards
+      if (!killer.isBot) {
+        if (killer.streak === 3) {
+          this.io.to(killer.id).emit('killstreak_unlocked', { streak: 3, reward: 'UAV Radar Sweep' });
+        } else if (killer.streak === 5) {
+          killer.inventory.fpvDroneReady = true;
+          this.io.to(killer.id).emit('killstreak_unlocked', { streak: 5, reward: 'FPV Attack Drone Recharged' });
+        } else if (killer.streak === 7) {
+          killer.inventory.missileReady = true;
+          this.io.to(killer.id).emit('killstreak_unlocked', { streak: 7, reward: 'Tactical Missile Strike Ready' });
+        }
+      }
     }
 
     this.io.to(this.roomId).emit('kill_feed', {
@@ -344,7 +408,13 @@ class MatchRoom {
 
   tick() {
     if (this.ended) return;
-    const now = Date.now();
+    const tStart = Date.now();
+    const now = tStart;
+
+    if (now >= this.nextWeatherAt) {
+      this.weather = WEATHER_STATES[Math.floor(Math.random() * WEATHER_STATES.length)];
+      this.nextWeatherAt = now + 90000;
+    }
 
     for (const p of this.players.values()) {
       if (!p.alive && now >= p.respawnAt) {
@@ -389,6 +459,34 @@ class MatchRoom {
       }
     }
 
+    for (let i = this.rockets.length - 1; i >= 0; i--) {
+      const r = this.rockets[i];
+      const stepDist = Math.hypot(r.vx * 0.05, r.vy * 0.05, r.vz * 0.05) || 1;
+      const rDir = { x: (r.vx * 0.05) / stepDist, y: (r.vy * 0.05) / stepDist, z: (r.vz * 0.05) / stepDist };
+      const occ = raycastWorldOcclusion({ x: r.x, y: r.y, z: r.z }, rDir, stepDist);
+
+      r.x += r.vx * 0.05;
+      r.y += r.vy * 0.05;
+      r.z += r.vz * 0.05;
+      r.vy -= 1.2 * 0.05;
+
+      let hit = occ !== null || r.y <= getTerrainHeight(r.x, r.z) + 0.2 || now >= r.ttl || Math.abs(r.x) > MAP_HALF_SIZE || Math.abs(r.z) > MAP_HALF_SIZE;
+      if (!hit) {
+        for (const t of this.players.values()) {
+          if (t.id !== r.ownerId && t.alive && Math.hypot(t.x - r.x, t.y + 1 - r.y, t.z - r.z) < 1.6) {
+            hit = true;
+            break;
+          }
+        }
+      }
+      if (hit) {
+        const owner = this.players.get(r.ownerId);
+        this.explodeAt(r.x, r.y, r.z, 9.5, 130, owner, 'Carl Gustaf M4');
+        this.io.to(this.roomId).emit('explosion', { x: r.x, y: r.y, z: r.z, radius: 9.5, kind: 'rocket' });
+        this.rockets.splice(i, 1);
+      }
+    }
+
     for (let i = this.missiles.length - 1; i >= 0; i--) {
       const m = this.missiles[i];
       m.y -= 2.4;
@@ -416,14 +514,19 @@ class MatchRoom {
 
     this.io.to(this.roomId).emit('state_snapshot', {
       t: now,
+      weather: this.weather,
       timeLeftSec: Math.max(0, Math.round((this.matchEndAt - now) / 1000)),
       scores: this.scores,
       players: Array.from(this.players.values()),
       airdrops: this.airdrops.crates,
       drones: this.drones.serialize(),
       grenades: this.grenades,
+      rockets: this.rockets,
       missiles: this.missiles
     });
+
+    const elapsed = Date.now() - tStart;
+    this.avgTickMs = this.avgTickMs ? this.avgTickMs * 0.9 + elapsed * 0.1 : elapsed;
   }
 
   finishMatch() {
