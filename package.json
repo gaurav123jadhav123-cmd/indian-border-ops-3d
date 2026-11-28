@@ -1,0 +1,20 @@
+{
+  "name": "indian-border-ops-3d",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Indian Border Ops 3D: a browser multiplayer first-person shooter (frontend + REST backend + authoritative game server)",
+  "type": "module",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "install:all": "npm --prefix backend install && npm --prefix server install",
+    "start": "node scripts/start-all.mjs",
+    "start:backend": "npm --prefix backend start",
+    "start:server": "npm --prefix server start",
+    "sync": "node scripts/sync-shared.mjs",
+    "check:shared": "node scripts/sync-shared.mjs --check",
+    "test": "node scripts/check-all.mjs",
+    "test:browser": "node scripts/check-all.mjs --e2e"
+  }
+}

@@ -1,0 +1,11 @@
+node_modules/
+.env
+*.log
+.DS_Store
+
+# accounts and leaderboard of a running game: never commit these
+backend/data/
+data/
+
+# screenshots and scratch files from the browser tests
+frontend/test/e2e/shots/

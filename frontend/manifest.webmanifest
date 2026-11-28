@@ -1,0 +1,14 @@
+{
+  "name": "Indian Border Ops 3D",
+  "short_name": "Border Ops",
+  "description": "Multiplayer first-person shooter set on the Himalayan border.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0b1220",
+  "theme_color": "#0b1220",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
